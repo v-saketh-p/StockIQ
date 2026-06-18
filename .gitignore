@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+.env
+
+# Node
+node_modules/
+.next/
+.env.local
+.env*.local
+
+# Logs
+/tmp/stockiq-*.log
+*.log
+
+# OS
+.DS_Store
+
+# Zip
+*.zip
