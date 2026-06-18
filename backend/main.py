@@ -204,6 +204,7 @@ def get_stock_report(ticker: str):
     if hist.empty:
         raise HTTPException(status_code=404, detail="No price history available")
 
+    # ── Price history & technicals ────────────────────────────────────────────
     close = hist["Close"]
     hist.ta.rsi(length=14, append=True)
     hist.ta.macd(append=True)
@@ -211,29 +212,51 @@ def get_stock_report(ticker: str):
     rsi_val    = safe(hist["RSI_14"].iloc[-1])        if "RSI_14"       in hist.columns else None
     macd_val   = safe(hist["MACD_12_26_9"].iloc[-1])  if "MACD_12_26_9"  in hist.columns else None
     signal_val = safe(hist["MACDs_12_26_9"].iloc[-1]) if "MACDs_12_26_9" in hist.columns else None
+    macd_hist  = safe(hist["MACDh_12_26_9"].iloc[-1]) if "MACDh_12_26_9" in hist.columns else None
 
-    ma50  = float(close.rolling(50).mean().iloc[-1])
-    ma200 = float(close.rolling(200).mean().iloc[-1])
-    price_now = float(close.iloc[-1])
-
-    week52_high    = float(close.rolling(252).max().iloc[-1])
-    week52_low     = float(close.rolling(252).min().iloc[-1])
+    price_now   = float(close.iloc[-1])
+    ma50        = float(close.rolling(50).mean().iloc[-1])
+    ma100       = float(close.rolling(100).mean().iloc[-1])
+    ma200       = float(close.rolling(200).mean().iloc[-1])
+    week52_high = float(close.rolling(252).max().iloc[-1])
+    week52_low  = float(close.rolling(252).min().iloc[-1])
     pct_of_52w_high = round((price_now / week52_high) * 100, 1) if week52_high else None
 
     vol_today = int(hist["Volume"].iloc[-1])
     vol_avg20 = float(hist["Volume"].rolling(20).mean().iloc[-1])
     vol_ratio = round(vol_today / vol_avg20, 2) if vol_avg20 else None
 
+    # Relative strength vs S&P 500 (3M and 6M)
+    spy = yf.Ticker("SPY").history(period="1y")["Close"]
+    rs_3m = rs_6m = None
+    try:
+        stock_3m = (price_now / float(close.iloc[-63]) - 1) * 100
+        spy_3m   = (float(spy.iloc[-1]) / float(spy.iloc[-63]) - 1) * 100
+        rs_3m    = round(stock_3m - spy_3m, 2)
+    except Exception:
+        pass
+    try:
+        stock_6m = (price_now / float(close.iloc[-126]) - 1) * 100
+        spy_6m   = (float(spy.iloc[-1]) / float(spy.iloc[-126]) - 1) * 100
+        rs_6m    = round(stock_6m - spy_6m, 2)
+    except Exception:
+        pass
+
+    # ── Fundamentals from yfinance ────────────────────────────────────────────
     roe          = safe(info.get("returnOnEquity"))
+    roa          = safe(info.get("returnOnAssets"))
     gross_margin = safe(info.get("grossMargins"))
     op_margin    = safe(info.get("operatingMargins"))
     net_margin   = safe(info.get("profitMargins"))
     rev_growth   = safe(info.get("revenueGrowth"))
     eps_growth   = safe(info.get("earningsGrowth"))
     free_cf      = safe(info.get("freeCashflow"))
+    op_cashflow  = safe(info.get("operatingCashflow"))
     debt_eq      = safe(info.get("debtToEquity"))
+    current_ratio = safe(info.get("currentRatio"))
     pe_trailing  = safe(info.get("trailingPE"))
     pe_forward   = safe(info.get("forwardPE"))
+    peg_ratio    = safe(info.get("pegRatio"))
     ev_ebitda    = safe(info.get("enterpriseToEbitda"))
     ev_revenue   = safe(info.get("enterpriseToRevenue"))
     market_cap   = safe(info.get("marketCap"))
@@ -243,7 +266,7 @@ def get_stock_report(ticker: str):
     net_income   = safe(info.get("netIncomeToCommon"))
     total_debt   = safe(info.get("totalDebt"))
     total_cash   = safe(info.get("totalCash"))
-    op_cashflow  = safe(info.get("operatingCashflow"))
+    total_assets = safe(info.get("totalAssets"))
     shares_out   = safe(info.get("sharesOutstanding"))
     shares_short = safe(info.get("sharesShort"))
     shares_float = safe(info.get("floatShares"))
@@ -253,13 +276,22 @@ def get_stock_report(ticker: str):
     target_high  = safe(info.get("targetHighPrice"))
     target_low   = safe(info.get("targetLowPrice"))
     analyst_count = safe(info.get("numberOfAnalystOpinions"))
+    eps_fwd      = safe(info.get("epsForward"))
+    eps_curr     = safe(info.get("epsCurrentYear"))
 
-    short_pct     = round((shares_short / shares_float) * 100, 2) if shares_short and shares_float else None
-    fcf_conversion = round((free_cf / net_income) * 100, 1) if free_cf and net_income and net_income > 0 else None
-    total_assets  = safe(info.get("totalAssets"))
-    accruals_ratio = round((net_income - op_cashflow) / total_assets * 100, 2) if net_income and op_cashflow and total_assets and total_assets > 0 else None
-    upside        = f"{round((target_mean / price_now - 1) * 100, 1)}%" if target_mean else "N/A"
+    # ── Derived metrics ───────────────────────────────────────────────────────
+    ebitda_margin   = round(ebitda / total_rev * 100, 2)      if ebitda and total_rev else None
+    fcf_margin      = round(free_cf / total_rev * 100, 2)     if free_cf and total_rev else None
+    fcf_yield       = round(free_cf / market_cap * 100, 2)    if free_cf and market_cap else None
+    fcf_conversion  = round(free_cf / net_income * 100, 1)    if free_cf and net_income and net_income > 0 else None
+    net_debt        = (total_debt - total_cash)                if total_debt and total_cash else None
+    net_debt_ebitda = round(net_debt / ebitda, 2)             if net_debt and ebitda and ebitda > 0 else None
+    pfcf            = round(price_now / (free_cf / shares_out), 2) if free_cf and shares_out and free_cf > 0 else None
+    short_pct       = round(shares_short / shares_float * 100, 2)  if shares_short and shares_float else None
+    accruals_ratio  = round((net_income - op_cashflow) / total_assets * 100, 2) if net_income and op_cashflow and total_assets and total_assets > 0 else None
+    upside          = f"{round((target_mean / price_now - 1) * 100, 1)}%" if target_mean else "N/A"
 
+    # ── Analyst recs ──────────────────────────────────────────────────────────
     analyst_recs_str = "N/A"
     try:
         recs = t.recommendations_summary
@@ -271,6 +303,17 @@ def get_stock_report(ticker: str):
     except Exception:
         pass
 
+    # ── Next earnings date ────────────────────────────────────────────────────
+    next_earnings = "N/A"
+    try:
+        dates = t.earnings_dates
+        if dates is not None and not dates.empty:
+            upcoming = dates[dates.index > pd.Timestamp.now(tz="UTC")]
+            if not upcoming.empty:
+                next_earnings = upcoming.index[0].strftime("%Y-%m-%d")
+    except Exception:
+        pass
+
     def pct(v): return f"{round(v * 100, 2)}%" if v is not None else "N/A"
     def num(v, d=2): return f"{round(v, d)}" if v is not None else "N/A"
     def bn(v): return f"${v / 1e9:.2f}B" if v is not None else "N/A"
@@ -279,42 +322,53 @@ def get_stock_report(ticker: str):
 
 Do not hedge every sentence. Be direct and opinionated. This report is for an investor with $10,000 to deploy who needs a clear, justified conclusion.
 
-═══ LIVE MARKET DATA — USE AS YOUR PRIMARY SOURCE ═══
-Company: {info.get('longName', ticker)}
-Sector: {info.get('sector', 'N/A')} | Industry: {info.get('industry', 'N/A')}
-Current Price: ${round(price_now, 2)} | Market Cap: {bn(market_cap)}
-52-Week High: ${round(week52_high, 2)} | 52-Week Low: ${round(week52_low, 2)} | Price as % of 52W High: {f"{pct_of_52w_high}%" if pct_of_52w_high else "N/A"}
+Use the live data blocks below as your PRIMARY source for each section. For anything not provided (ROIC, WACC, PMI, credit spreads, VIX, insider transactions, earnings beat history), use your training knowledge and flag it as an estimate.
 
-VALUATION:
-P/E Trailing: {num(pe_trailing)} | P/E Forward: {num(pe_forward)} | EV/EBITDA: {num(ev_ebitda)} | EV/Revenue: {num(ev_revenue)}
-
-INCOME STATEMENT (TTM):
-Revenue: {bn(total_rev)} | EBITDA: {bn(ebitda)} | Net Income: {bn(net_income)}
-Revenue Growth (YoY): {pct(rev_growth)} | EPS Growth (YoY): {pct(eps_growth)}
-Gross Margin: {pct(gross_margin)} | Operating Margin: {pct(op_margin)} | Net Margin: {pct(net_margin)} | ROE: {pct(roe)}
-
-BALANCE SHEET & CASH FLOW:
-Total Debt: {bn(total_debt)} | Cash: {bn(total_cash)} | Debt/Equity: {num(debt_eq)}
+━━━ LIVE DATA: PART 1 — PROFITABILITY & CASH FLOW ━━━
+Revenue (TTM): {bn(total_rev)} | Revenue Growth (YoY): {pct(rev_growth)} | EPS Growth (YoY): {pct(eps_growth)}
+Gross Margin: {pct(gross_margin)} | Operating Margin: {pct(op_margin)} | Net Margin: {pct(net_margin)}
+EBITDA Margin: {f"{ebitda_margin}%" if ebitda_margin else "N/A"} | FCF Margin: {f"{fcf_margin}%" if fcf_margin else "N/A"}
+ROE: {pct(roe)} | ROA: {pct(roa)}
 Free Cash Flow: {bn(free_cf)} | Operating Cash Flow: {bn(op_cashflow)}
-FCF Conversion (FCF/Net Income): {f"{fcf_conversion}%" if fcf_conversion else "N/A"}
-Accruals Ratio: {f"{accruals_ratio}%" if accruals_ratio is not None else "N/A"} (negative = quality signal, positive = red flag)
+FCF Conversion (FCF/Net Income): {f"{fcf_conversion}%" if fcf_conversion else "N/A"} | FCF Yield: {f"{fcf_yield}%" if fcf_yield else "N/A"}
+Accruals Ratio: {f"{accruals_ratio}%" if accruals_ratio is not None else "N/A"} ← negative = quality signal, positive = red flag
+
+━━━ LIVE DATA: PART 1 — BALANCE SHEET ━━━
+Total Debt: {bn(total_debt)} | Cash: {bn(total_cash)} | Net Debt: {bn(net_debt)}
+Net Debt/EBITDA: {num(net_debt_ebitda)} | Debt/Equity: {num(debt_eq)} | Current Ratio: {num(current_ratio)}
 Beta: {num(beta)} | Shares Outstanding: {f"{shares_out/1e9:.2f}B" if shares_out else "N/A"}
 
-TECHNICALS:
-RSI (14): {num(rsi_val)} ({'Overbought' if rsi_val and rsi_val > 70 else 'Oversold' if rsi_val and rsi_val < 30 else 'Neutral'})
-MACD: {num(macd_val)} | Signal: {num(signal_val)} → {'Bullish' if macd_val and signal_val and macd_val > signal_val else 'Bearish'} crossover
-50-Day MA: ${round(ma50, 2)} ({'above' if price_now > ma50 else 'below'}) | 200-Day MA: ${round(ma200, 2)} ({'above' if price_now > ma200 else 'below'})
-Golden Cross: {'Yes (50DMA > 200DMA — bullish)' if ma50 > ma200 else 'No (Death Cross — bearish)'}
-Volume: {vol_today/1e6:.1f}M ({f"{vol_ratio}x 20-day avg" if vol_ratio else "N/A"})
-
-INSTITUTIONAL & SENTIMENT:
-Institutional Ownership: {f"{round(inst_own*100,1)}%" if inst_own else "N/A"}
-Short Interest: {f"{short_pct}% of float" if short_pct else "N/A"} | Days-to-Cover: {num(short_ratio)}
+━━━ LIVE DATA: PART 3 — EARNINGS & ANALYST ESTIMATES ━━━
+EPS (Current Year Est.): {num(eps_curr)} | EPS (Forward Est.): {num(eps_fwd)}
 Analyst Count: {analyst_count or "N/A"} | Recommendations: {analyst_recs_str}
 Price Targets — Mean: ${num(target_mean)}, High: ${num(target_high)}, Low: ${num(target_low)} | Upside to Mean: {upside}
-═══════════════════════════════════════════════════════
+Next Earnings Date: {next_earnings}
 
-For data points not in the live data above (e.g. ROIC, PMI, credit spreads, VIX, insider transactions, earnings beat history), use your training knowledge and clearly note when estimating vs citing live data.
+━━━ LIVE DATA: PART 4 — VALUATION MULTIPLES ━━━
+P/E Trailing: {num(pe_trailing)} | P/E Forward: {num(pe_forward)} | PEG Ratio: {num(peg_ratio)}
+EV/EBITDA: {num(ev_ebitda)} | EV/Sales: {num(ev_revenue)} | P/FCF: {num(pfcf)}
+Market Cap: {bn(market_cap)} | EBITDA: {bn(ebitda)} | Net Income: {bn(net_income)}
+DCF inputs — Total Debt: {bn(total_debt)}, Cash: {bn(total_cash)}, Shares Out: {f"{shares_out/1e9:.2f}B" if shares_out else "N/A"}
+
+━━━ LIVE DATA: PART 5 — INSTITUTIONAL FLOW & POSITIONING ━━━
+Institutional Ownership: {f"{round(inst_own*100,1)}%" if inst_own else "N/A"}
+Short Interest: {f"{short_pct}% of float" if short_pct else "N/A"} | Days-to-Cover: {num(short_ratio)} ← DTC >10 = strong bearish conviction, <3 = low
+
+━━━ LIVE DATA: PART 6 — TECHNICALS ━━━
+Current Price: ${round(price_now, 2)} | 52W High: ${round(week52_high, 2)} | 52W Low: ${round(week52_low, 2)}
+Price as % of 52W High: {f"{pct_of_52w_high}%" if pct_of_52w_high else "N/A"} ← >85% positive, 70-85% neutral, <70% negative (George & Hwang 2004)
+50-Day MA: ${round(ma50, 2)} | 100-Day MA: ${round(ma100, 2)} | 200-Day MA: ${round(ma200, 2)}
+Price vs MAs: {'above' if price_now > ma50 else 'below'} 50DMA | {'above' if price_now > ma100 else 'below'} 100DMA | {'above' if price_now > ma200 else 'below'} 200DMA
+MA Structure: {'Golden Cross — 50DMA above 200DMA (bullish)' if ma50 > ma200 else 'Death Cross — 50DMA below 200DMA (bearish)'}
+RSI (14): {num(rsi_val)} ({'Overbought >70' if rsi_val and rsi_val > 70 else 'Oversold <30' if rsi_val and rsi_val < 30 else 'Neutral 40-70'})
+MACD: {num(macd_val)} | Signal Line: {num(signal_val)} | Histogram: {num(macd_hist)} → {'Bullish crossover' if macd_val and signal_val and macd_val > signal_val else 'Bearish crossover'}
+Volume: {vol_today/1e6:.1f}M vs 20-day avg ({f"{vol_ratio}x" if vol_ratio else "N/A"})
+Relative Strength vs S&P 500: 3M: {f"{'+' if rs_3m and rs_3m > 0 else ''}{rs_3m}%" if rs_3m is not None else "N/A"} | 6M: {f"{'+' if rs_6m and rs_6m > 0 else ''}{rs_6m}%" if rs_6m is not None else "N/A"}
+
+━━━ LIVE DATA: PART 8 — CATALYSTS ━━━
+Next Earnings Date: {next_earnings}
+Company: {info.get('longName', ticker)} | Sector: {info.get('sector', 'N/A')} | Industry: {info.get('industry', 'N/A')}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # PART 0 — MACRO REGIME CLASSIFICATION
 
