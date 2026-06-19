@@ -38,6 +38,7 @@ def get_stock(ticker: str):
         raise HTTPException(status_code=404, detail=f"Ticker '{ticker}' not found")
 
     hist = t.history(period="1y")
+    hist = hist[hist["Close"].notna()]
     if hist.empty:
         raise HTTPException(status_code=404, detail="No price history available")
 
@@ -54,13 +55,14 @@ def get_stock(ticker: str):
     vwap_cols  = [c for c in hist.columns if c.startswith("VWAP")]
     vwap_val   = safe(hist[vwap_cols[0]].iloc[-1]) if vwap_cols else None
 
-    ma50      = float(close.rolling(50).mean().iloc[-1])
-    ma200     = float(close.rolling(200).mean().iloc[-1])
-    price_now = float(close.iloc[-1])
+    ma50  = float(close.rolling(50).mean().iloc[-1])
+    ma200 = float(close.rolling(200).mean().iloc[-1])
 
-    # Compute 1D change from historical closes — avoids stale yfinance info dict
-    prev_close = float(close.iloc[-2]) if len(close) >= 2 else price_now
-    change_1d  = round((price_now / prev_close - 1) * 100, 2) if prev_close else 0
+    # Real-time price and 1D change from the info dict — hist["Close"] lags by one
+    # session during market hours because today's candle has no official close yet.
+    price_now = float(info.get("currentPrice") or info.get("regularMarketPrice") or close.iloc[-1])
+    _prev     = info.get("previousClose") or info.get("regularMarketPreviousClose")
+    change_1d = round((price_now / float(_prev) - 1) * 100, 2) if _prev else 0.0
 
     vol_today = int(hist["Volume"].iloc[-1])
     vol_avg20 = float(hist["Volume"].rolling(20).mean().iloc[-1])
@@ -76,13 +78,34 @@ def get_stock(ticker: str):
         })
 
     roe           = safe(info.get("returnOnEquity"))
-    gross_margin  = safe(info.get("grossMargins"))
+    # Gross margin is meaningless (returns 0.0) for banks/financials — treat as N/A
+    gross_margin_raw = safe(info.get("grossMargins"))
+    gross_margin  = gross_margin_raw if (gross_margin_raw and gross_margin_raw > 0.001) else None
     op_margin     = safe(info.get("operatingMargins"))
     net_margin    = safe(info.get("profitMargins"))
     rev_growth    = safe(info.get("revenueGrowth"))
     eps_growth    = safe(info.get("earningsGrowth"))
-    free_cf       = safe(info.get("freeCashflow"))
+    # info.freeCashflow is stale for many tickers; pull directly from the cash flow statement
+    free_cf = None
+    try:
+        cf_stmt = t.cashflow
+        if "Free Cash Flow" in cf_stmt.index:
+            _v = cf_stmt.loc["Free Cash Flow"].iloc[0]
+            if not pd.isna(_v):
+                free_cf = float(_v)
+    except Exception:
+        free_cf = safe(info.get("freeCashflow"))
     debt_eq       = safe(info.get("debtToEquity"))
+    total_cash    = safe(info.get("totalCash"))
+    total_debt    = safe(info.get("totalDebt"))
+    total_rev     = safe(info.get("totalRevenue"))
+
+    # Dividend yield: yfinance's dividendYield field is already in % form for some tickers
+    # and returns None for others even when dividends are paid (e.g. JNJ, JPM).
+    # Most reliable approach: calculate from annual dividend rate / price.
+    # Fall back to trailingAnnualDividendRate if forward dividendRate is missing.
+    div_rate = safe(info.get("dividendRate")) or safe(info.get("trailingAnnualDividendRate"))
+    div_yield = round((div_rate / price_now) * 100, 2) if (div_rate and div_rate > 0 and price_now) else None
 
     pre_price  = safe(info.get("preMarketPrice"))
     pre_pct    = safe(info.get("preMarketChangePercent"))
@@ -99,10 +122,16 @@ def get_stock(ticker: str):
         "preMarket":  { "price": round(pre_price,  2) if pre_price  else None, "changePct": round(pre_pct,  3) if pre_pct  else None },
         "postMarket": { "price": round(post_price, 2) if post_price else None, "changePct": round(post_pct, 3) if post_pct else None },
         "marketCap": safe(info.get("marketCap")),
+        "fiftyTwoWeekHigh": safe(info.get("fiftyTwoWeekHigh")),
+        "fiftyTwoWeekLow":  safe(info.get("fiftyTwoWeekLow")),
+        "beta": round(safe(info.get("beta")) or 0, 2) or None,
+        "eps":  safe(info.get("trailingEps")),
+        "revenueB": round(total_rev / 1e9, 2) if total_rev else None,
         "valuation": {
             "peTrailing":  round(safe(info.get("trailingPE")) or 0, 2) or None,
-            "peForward":   round(safe(info.get("forwardPE"))  or 0, 2) or None,
             "evEbitda":    round(safe(info.get("enterpriseToEbitda")) or 0, 2) or None,
+            "evRevenue":   round(safe(info.get("enterpriseToRevenue")) or 0, 2) or None,
+            "priceToBook": round(safe(info.get("priceToBook")) or 0, 2) or None,
         },
         "profitability": {
             "roe":              round(roe * 100, 2)          if roe          else None,
@@ -113,8 +142,11 @@ def get_stock(ticker: str):
             "epsGrowth":        round(eps_growth * 100, 2)   if eps_growth   else None,
         },
         "balanceSheet": {
-            "debtEquity":   round(debt_eq, 2) if debt_eq else None,
-            "freeCashFlow": round(free_cf / 1e9, 2) if free_cf else None,
+            "debtEquity":    round(debt_eq, 2) if debt_eq else None,
+            "freeCashFlow":  round(free_cf / 1e9, 2) if free_cf else None,
+            "totalCash":     round(total_cash / 1e9, 2) if total_cash else None,
+            "totalDebt":     round(total_debt / 1e9, 2) if total_debt else None,
+            "dividendYield": div_yield,
         },
         "technicals": {
             "rsi":         round(rsi_val, 2)    if rsi_val    else None,
@@ -128,6 +160,79 @@ def get_stock(ticker: str):
         },
         "chart": chart_data,
     }
+
+
+@app.get("/api/stock/{ticker}/financials")
+def get_financials(ticker: str):
+    ticker = ticker.upper()
+    t = yf.Ticker(ticker)
+    info = t.info
+    if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
+        raise HTTPException(status_code=404, detail=f"Ticker '{ticker}' not found")
+
+    # ── Annual Revenue (last 4 fiscal years, oldest → newest) ────────────────
+    revenue = []
+    try:
+        inc = t.income_stmt
+        if "Total Revenue" in inc.index:
+            rows = [(col, inc.loc["Total Revenue", col]) for col in inc.columns[:4]]
+            rows.reverse()
+            for col, val in rows:
+                if not pd.isna(val):
+                    revenue.append({"year": str(col.year), "value": round(float(val) / 1e9, 2)})
+    except Exception:
+        pass
+
+    # ── Annual Free Cash Flow (last 4 fiscal years, oldest → newest) ─────────
+    fcf = []
+    try:
+        cf = t.cashflow
+        if "Free Cash Flow" in cf.index:
+            rows = [(col, cf.loc["Free Cash Flow", col]) for col in cf.columns[:4]]
+            rows.reverse()
+            for col, val in rows:
+                if not pd.isna(val):
+                    fcf.append({"year": str(col.year), "value": round(float(val) / 1e9, 2)})
+    except Exception:
+        pass
+
+    # ── Annual P/E history (last 4 fiscal years + current TTM) ──────────────
+    # Use annual EPS from income statement + stock price at fiscal year-end date
+    pe_history = []
+    try:
+        inc = t.income_stmt
+        eps_key = next((k for k in ["Diluted EPS", "Basic EPS"] if k in inc.index), None)
+        if eps_key:
+            price_hist = t.history(period="5y", interval="1d")
+            price_hist = price_hist[price_hist["Close"].notna()]
+            if price_hist.index.tz is not None:
+                price_hist.index = price_hist.index.tz_localize(None)
+
+            annual = []
+            for col in inc.columns[:4]:
+                eps = inc.loc[eps_key, col]
+                if pd.isna(eps) or float(eps) <= 0:
+                    continue
+                year_end = col.tz_localize(None) if hasattr(col, "tzinfo") and col.tzinfo else col
+                # Find the nearest trading day price within 7 days of fiscal year end
+                window = price_hist[abs(price_hist.index - year_end) <= pd.Timedelta(days=7)]
+                if window.empty:
+                    window = price_hist[abs(price_hist.index - year_end) <= pd.Timedelta(days=30)]
+                if not window.empty:
+                    price_at_ye = float(window["Close"].iloc[-1])
+                    pe = round(price_at_ye / float(eps), 1)
+                    annual.append({"year": str(col.year), "pe": pe})
+            annual.reverse()  # oldest → newest
+            pe_history = annual
+
+        # Append current trailing PE
+        trailing_pe = safe(info.get("trailingPE"))
+        if trailing_pe:
+            pe_history.append({"year": "TTM", "pe": round(float(trailing_pe), 1)})
+    except Exception:
+        pass
+
+    return {"ticker": ticker, "revenue": revenue, "fcf": fcf, "peHistory": pe_history}
 
 
 @app.get("/api/stock/{ticker}/chart")
@@ -201,6 +306,7 @@ def get_stock_report(ticker: str):
         raise HTTPException(status_code=404, detail=f"Ticker '{ticker}' not found")
 
     hist = t.history(period="1y")
+    hist = hist[hist["Close"].notna()]
     if hist.empty:
         raise HTTPException(status_code=404, detail="No price history available")
 
@@ -217,8 +323,9 @@ def get_stock_report(ticker: str):
 
     ma50  = float(close.rolling(50).mean().iloc[-1])
     ma200 = float(close.rolling(200).mean().iloc[-1])
-    price_now = float(close.iloc[-1])
-    change    = round(safe(info.get("regularMarketChangePercent")) or 0, 2)
+    price_now = float(info.get("currentPrice") or info.get("regularMarketPrice") or close.iloc[-1])
+    _prev     = info.get("previousClose") or info.get("regularMarketPreviousClose")
+    change    = round((price_now / float(_prev) - 1) * 100, 2) if _prev else 0.0
 
     vol_today = int(hist["Volume"].iloc[-1])
     vol_avg20 = float(hist["Volume"].rolling(20).mean().iloc[-1])
@@ -362,10 +469,11 @@ def get_bull_bear(ticker: str):
         raise HTTPException(status_code=404, detail=f"Ticker '{ticker}' not found")
 
     hist      = t.history(period="1y")
+    hist      = hist[hist["Close"].notna()]
     close     = hist["Close"]
     ma50      = float(close.rolling(50).mean().iloc[-1])
     ma200     = float(close.rolling(200).mean().iloc[-1])
-    price_now = float(close.iloc[-1])
+    price_now = float(info.get("currentPrice") or info.get("regularMarketPrice") or close.iloc[-1])
 
     def pct(v): return f"{round(v * 100, 2)}%" if v is not None else "N/A"
     def num(v, d=2): return f"{round(v, d)}" if v is not None else "N/A"
@@ -447,6 +555,7 @@ def chat_stock(ticker: str, body: ChatRequest):
         raise HTTPException(status_code=404, detail=f"Ticker '{ticker}' not found")
 
     hist = t.history(period="1y")
+    hist = hist[hist["Close"].notna()]
     close = hist["Close"]
     hist.ta.rsi(length=14, append=True)
     hist.ta.macd(append=True)
@@ -456,7 +565,7 @@ def chat_stock(ticker: str, body: ChatRequest):
     signal_val = safe(hist["MACDs_12_26_9"].iloc[-1]) if "MACDs_12_26_9" in hist.columns else None
     ma50       = float(close.rolling(50).mean().iloc[-1])
     ma200      = float(close.rolling(200).mean().iloc[-1])
-    price_now  = float(close.iloc[-1])
+    price_now  = float(info.get("currentPrice") or info.get("regularMarketPrice") or close.iloc[-1])
 
     def pct(v): return f"{round(v * 100, 2)}%" if v is not None else "N/A"
     def num(v, d=2): return f"{round(v, d)}" if v is not None else "N/A"
@@ -619,7 +728,7 @@ def get_earnings_meta(ticker: str):
         "analystRecs":    analyst_recs,
         "sector":         info.get("sector", ""),
         "industry":       info.get("industry", ""),
-        "price":          round(float(t.history(period="1d")["Close"].iloc[-1]), 2),
+        "price":          round(float(float(info.get("currentPrice") or info.get("regularMarketPrice") or t.history(period="1d")["Close"].dropna().iloc[-1])), 2),
     }
 
 
@@ -634,7 +743,8 @@ async def get_earnings_preview(ticker: str):
             raise HTTPException(status_code=404, detail=f"Ticker '{t_upper}' not found")
 
         hist      = t.history(period="1y")
-        price_now = float(hist["Close"].iloc[-1])
+        hist      = hist[hist["Close"].notna()]
+        price_now = float(info.get("currentPrice") or info.get("regularMarketPrice") or hist["Close"].iloc[-1])
 
         next_date = None
         try:
@@ -718,7 +828,7 @@ async def get_dcf(ticker: str):
         if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
             raise HTTPException(status_code=404, detail=f"Ticker '{t_upper}' not found")
 
-        price      = round(float(t.history(period="1d")["Close"].iloc[-1]), 2)
+        price      = round(float(float(info.get("currentPrice") or info.get("regularMarketPrice") or t.history(period="1d")["Close"].dropna().iloc[-1])), 2)
         shares_out = safe(info.get("sharesOutstanding"))
 
         def num(v, d=2): return f"{round(v, d)}" if v is not None else "N/A"
@@ -779,7 +889,7 @@ async def get_comps(ticker: str):
         if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
             raise HTTPException(status_code=404, detail=f"Ticker '{t_upper}' not found")
 
-        price = round(float(t.history(period="1d")["Close"].iloc[-1]), 2)
+        price = round(float(float(info.get("currentPrice") or info.get("regularMarketPrice") or t.history(period="1d")["Close"].dropna().iloc[-1])), 2)
 
         def num(v, d=2): return f"{round(v, d)}" if v is not None else "N/A"
         def pct(v): return f"{round(v * 100, 2)}%" if v is not None else "N/A"
@@ -876,11 +986,12 @@ async def get_plugin_report(ticker: str):
             raise HTTPException(status_code=404, detail=f"Ticker '{t_upper}' not found")
 
         hist      = t.history(period="1y")
+        hist      = hist[hist["Close"].notna()]
         close     = hist["Close"]
         hist.ta.rsi(length=14, append=True)
         hist.ta.macd(append=True)
 
-        price_now  = float(close.iloc[-1])
+        price_now  = float(info.get("currentPrice") or info.get("regularMarketPrice") or close.iloc[-1])
         rsi_val    = safe(hist["RSI_14"].iloc[-1])        if "RSI_14"       in hist.columns else None
         macd_val   = safe(hist["MACD_12_26_9"].iloc[-1])  if "MACD_12_26_9"  in hist.columns else None
         signal_val = safe(hist["MACDs_12_26_9"].iloc[-1]) if "MACDs_12_26_9" in hist.columns else None
