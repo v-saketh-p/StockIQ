@@ -48,9 +48,23 @@ export default function AIReport({ ticker, autoTrigger }: Props) {
         const j = await res.json().catch(() => ({}));
         throw new Error(j.detail || `HTTP ${res.status}`);
       }
-      const data = await res.json();
-      setHtml(data.html || "<p>No report returned.</p>");
-      setGenerated(true);
+      const reader  = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      let accumulated = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n"); buf = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const payload = line.slice(6);
+          if (payload === "[DONE]") { setHtml(accumulated); setGenerated(true); break; }
+          try { const { text } = JSON.parse(payload); accumulated += text; } catch {}
+        }
+      }
+      if (!accumulated) throw new Error("Empty response from server");
     } catch (e: unknown) {
       if ((e as Error).name === "AbortError") return;
       setError(e instanceof Error ? e.message : "Unknown error");
