@@ -204,87 +204,571 @@ def get_stock_report(ticker: str):
     if hist.empty:
         raise HTTPException(status_code=404, detail="No price history available")
 
+    # ── Price history & technicals ────────────────────────────────────────────
     close = hist["Close"]
     hist.ta.rsi(length=14, append=True)
     hist.ta.macd(append=True)
-    hist.ta.vwap(append=True)
 
     rsi_val    = safe(hist["RSI_14"].iloc[-1])        if "RSI_14"       in hist.columns else None
     macd_val   = safe(hist["MACD_12_26_9"].iloc[-1])  if "MACD_12_26_9"  in hist.columns else None
     signal_val = safe(hist["MACDs_12_26_9"].iloc[-1]) if "MACDs_12_26_9" in hist.columns else None
-    vwap_cols  = [c for c in hist.columns if c.startswith("VWAP")]
-    vwap_val   = safe(hist[vwap_cols[0]].iloc[-1]) if vwap_cols else None
+    macd_hist  = safe(hist["MACDh_12_26_9"].iloc[-1]) if "MACDh_12_26_9" in hist.columns else None
 
-    ma50  = float(close.rolling(50).mean().iloc[-1])
-    ma200 = float(close.rolling(200).mean().iloc[-1])
-    price_now = float(close.iloc[-1])
-    change    = round(safe(info.get("regularMarketChangePercent")) or 0, 2)
+    price_now   = float(close.iloc[-1])
+    ma50        = float(close.rolling(50).mean().iloc[-1])
+    ma100       = float(close.rolling(100).mean().iloc[-1])
+    ma200       = float(close.rolling(200).mean().iloc[-1])
+    week52_high = float(close.rolling(252).max().iloc[-1])
+    week52_low  = float(close.rolling(252).min().iloc[-1])
+    pct_of_52w_high = round((price_now / week52_high) * 100, 1) if week52_high else None
 
     vol_today = int(hist["Volume"].iloc[-1])
     vol_avg20 = float(hist["Volume"].rolling(20).mean().iloc[-1])
     vol_ratio = round(vol_today / vol_avg20, 2) if vol_avg20 else None
 
+    # Relative strength vs S&P 500 (3M and 6M)
+    spy = yf.Ticker("SPY").history(period="1y")["Close"]
+    rs_3m = rs_6m = None
+    try:
+        stock_3m = (price_now / float(close.iloc[-63]) - 1) * 100
+        spy_3m   = (float(spy.iloc[-1]) / float(spy.iloc[-63]) - 1) * 100
+        rs_3m    = round(stock_3m - spy_3m, 2)
+    except Exception:
+        pass
+    try:
+        stock_6m = (price_now / float(close.iloc[-126]) - 1) * 100
+        spy_6m   = (float(spy.iloc[-1]) / float(spy.iloc[-126]) - 1) * 100
+        rs_6m    = round(stock_6m - spy_6m, 2)
+    except Exception:
+        pass
+
+    # ── Fundamentals from yfinance ────────────────────────────────────────────
     roe          = safe(info.get("returnOnEquity"))
+    roa          = safe(info.get("returnOnAssets"))
     gross_margin = safe(info.get("grossMargins"))
     op_margin    = safe(info.get("operatingMargins"))
     net_margin   = safe(info.get("profitMargins"))
     rev_growth   = safe(info.get("revenueGrowth"))
     eps_growth   = safe(info.get("earningsGrowth"))
     free_cf      = safe(info.get("freeCashflow"))
+    op_cashflow  = safe(info.get("operatingCashflow"))
     debt_eq      = safe(info.get("debtToEquity"))
+    current_ratio = safe(info.get("currentRatio"))
     pe_trailing  = safe(info.get("trailingPE"))
     pe_forward   = safe(info.get("forwardPE"))
+    peg_ratio    = safe(info.get("pegRatio"))
     ev_ebitda    = safe(info.get("enterpriseToEbitda"))
+    ev_revenue   = safe(info.get("enterpriseToRevenue"))
     market_cap   = safe(info.get("marketCap"))
+    beta         = safe(info.get("beta"))
+    total_rev    = safe(info.get("totalRevenue"))
+    ebitda       = safe(info.get("ebitda"))
+    net_income   = safe(info.get("netIncomeToCommon"))
+    total_debt   = safe(info.get("totalDebt"))
+    total_cash   = safe(info.get("totalCash"))
+    total_assets = safe(info.get("totalAssets"))
+    shares_out   = safe(info.get("sharesOutstanding"))
+    shares_short = safe(info.get("sharesShort"))
+    shares_float = safe(info.get("floatShares"))
+    short_ratio  = safe(info.get("shortRatio"))
+    inst_own     = safe(info.get("heldPercentInstitutions"))
+    target_mean  = safe(info.get("targetMeanPrice"))
+    target_high  = safe(info.get("targetHighPrice"))
+    target_low   = safe(info.get("targetLowPrice"))
+    analyst_count = safe(info.get("numberOfAnalystOpinions"))
+    eps_fwd      = safe(info.get("epsForward"))
+    eps_curr     = safe(info.get("epsCurrentYear"))
+
+    # ── Derived metrics ───────────────────────────────────────────────────────
+    ebitda_margin   = round(ebitda / total_rev * 100, 2)      if ebitda and total_rev else None
+    fcf_margin      = round(free_cf / total_rev * 100, 2)     if free_cf and total_rev else None
+    fcf_yield       = round(free_cf / market_cap * 100, 2)    if free_cf and market_cap else None
+    fcf_conversion  = round(free_cf / net_income * 100, 1)    if free_cf and net_income and net_income > 0 else None
+    net_debt        = (total_debt - total_cash)                if total_debt and total_cash else None
+    net_debt_ebitda = round(net_debt / ebitda, 2)             if net_debt and ebitda and ebitda > 0 else None
+    pfcf            = round(price_now / (free_cf / shares_out), 2) if free_cf and shares_out and free_cf > 0 else None
+    short_pct       = round(shares_short / shares_float * 100, 2)  if shares_short and shares_float else None
+    accruals_ratio  = round((net_income - op_cashflow) / total_assets * 100, 2) if net_income and op_cashflow and total_assets and total_assets > 0 else None
+    upside          = f"{round((target_mean / price_now - 1) * 100, 1)}%" if target_mean else "N/A"
+
+    # ── Analyst recs ──────────────────────────────────────────────────────────
+    analyst_recs_str = "N/A"
+    try:
+        recs = t.recommendations_summary
+        if recs is not None and not recs.empty:
+            row = recs.iloc[0]
+            analyst_recs_str = (f"Strong Buy: {int(row.get('strongBuy',0))}, "
+                                f"Buy: {int(row.get('buy',0))}, Hold: {int(row.get('hold',0))}, "
+                                f"Sell: {int(row.get('sell',0))}, Strong Sell: {int(row.get('strongSell',0))}")
+    except Exception:
+        pass
+
+    # ── Next earnings date ────────────────────────────────────────────────────
+    next_earnings = "N/A"
+    try:
+        dates = t.earnings_dates
+        if dates is not None and not dates.empty:
+            upcoming = dates[dates.index > pd.Timestamp.now(tz="UTC")]
+            if not upcoming.empty:
+                next_earnings = upcoming.index[0].strftime("%Y-%m-%d")
+    except Exception:
+        pass
 
     def pct(v): return f"{round(v * 100, 2)}%" if v is not None else "N/A"
     def num(v, d=2): return f"{round(v, d)}" if v is not None else "N/A"
+    def bn(v): return f"${v / 1e9:.2f}B" if v is not None else "N/A"
 
-    prompt = f"""You are a professional equity research analyst. Analyze the following data for {ticker} ({info.get('longName', ticker)}) and write a concise but thorough investment research report.
+    prompt = f"""# MASTER EQUITY RESEARCH REPORT — {ticker}
 
-**Company:** {info.get('longName', ticker)}
-**Sector:** {info.get('sector', 'N/A')} | **Industry:** {info.get('industry', 'N/A')}
-**Market Cap:** {'${:,.0f}B'.format(market_cap / 1e9) if market_cap else 'N/A'}
+You are an institutional equity research analyst. Your task is to produce a hedge fund-style equity research report on {ticker} that answers one question with evidence: **will this stock outperform the S&P 500 over the next 1–18 months without taking on disproportionate risk?**
 
-**Price & Performance**
-- Current Price: ${round(price_now, 2)}
-- Daily Change: {change}%
-- vs 50-Day MA: {'above' if price_now > ma50 else 'below'} (MA50: ${round(ma50, 2)})
-- vs 200-Day MA: {'above' if price_now > ma200 else 'below'} (MA200: ${round(ma200, 2)})
+Do not take shortcuts. Do not hedge every sentence. Be direct. This report is for an investor with $10,000 to deploy and needs a clear, justified conclusion.
 
-**Valuation**
-- P/E (Trailing): {num(pe_trailing)}
-- P/E (Forward): {num(pe_forward)}
-- EV/EBITDA: {num(ev_ebitda)}
+---
 
-**Profitability**
-- Gross Margin: {pct(gross_margin)}
-- Operating Margin: {pct(op_margin)}
-- Net Margin: {pct(net_margin)}
-- ROE: {pct(roe)}
-- Revenue Growth (YoY): {pct(rev_growth)}
-- EPS Growth (YoY): {pct(eps_growth)}
+# PART 0 — MACRO REGIME CLASSIFICATION
+*(This section must come first. The regime determines which factors matter and which signals to weight.)*
 
-**Balance Sheet**
-- Debt/Equity: {num(debt_eq)}
-- Free Cash Flow: {'${:.2f}B'.format(free_cf / 1e9) if free_cf else 'N/A'}
+Before analysing the stock, classify the current macro environment across four dimensions:
 
-**Technical Indicators**
-- RSI (14): {num(rsi_val)} ({'Overbought' if rsi_val and rsi_val > 70 else 'Oversold' if rsi_val and rsi_val < 30 else 'Neutral'})
-- MACD: {num(macd_val)} | Signal: {num(signal_val)} ({'Bullish crossover' if macd_val and signal_val and macd_val > signal_val else 'Bearish crossover'})
-- VWAP: {'${:.2f} (price is {} VWAP)'.format(vwap_val, 'above' if price_now > vwap_val else 'below') if vwap_val else 'N/A'}
-- Volume: {'{:.1f}M'.format(vol_today / 1e6)} ({f'{vol_ratio}x avg' if vol_ratio else 'N/A'})
+**A. Growth regime**
+- Is GDP growth accelerating, decelerating, or contracting?
+- What does the most recent PMI data signal?
+- Where are we in the business cycle? (early / mid / late / contraction)
+- Verdict: Growth Expanding | Growth Peaking | Growth Contracting
 
-Write a structured report with these sections:
-1. **Executive Summary** (2-3 sentences with overall take)
-2. **Business Overview** (brief company description)
-3. **Valuation Analysis** (assess if cheap/fair/expensive vs sector/history)
-4. **Profitability & Growth** (quality of earnings and growth trajectory)
-5. **Technical Picture** (momentum, trend, key levels)
-6. **Key Risks** (bullet list of 3-4 main risks)
-7. **Investment Conclusion** (Bullish / Neutral / Bearish with reasoning)
+**B. Inflation & rate regime**
+- Is inflation above/below/approaching the Fed's 2% target?
+- Is the Fed cutting, holding, or hiking?
+- Is the yield curve steepening or flattening?
+- Critical: are rates *rising* or *falling* right now? (Rate direction matters more than rate level per MSCI 50-year study.)
+- Verdict: Rates Rising | Rates Falling | Rates Stable
 
-Be direct and opinionated. Use markdown formatting. Keep total length to ~500 words."""
+**C. Risk appetite**
+- Credit spreads (IG and HY): tight or wide vs 12-month average?
+- VIX: elevated or suppressed?
+- Is capital flowing toward risk-on (growth, cyclicals) or risk-off (defensives, cash)?
+- Verdict: Risk-On | Risk-Off | Transitioning
+
+**D. Regime implication for this stock**
+Given the above, explicitly state:
+- Does this macro regime favour or work against this stock's sector and factor profile?
+- Which factors are currently rewarded by the market? (quality / value / momentum / low-vol / growth)
+- Is this stock swimming with or against the macro tide?
+
+---
+
+# PART 1 — BUSINESS & FUNDAMENTAL ANALYSIS
+
+## Business Overview
+- Business model and revenue streams (be specific: SaaS vs perpetual license, recurring vs transactional, etc.)
+- What does the company actually sell and to whom?
+- Market share: is it gaining or losing?
+- Pricing power: can they raise prices without losing customers?
+
+## Fundamental Quality Score
+
+Analyse each metric, then score the category 1–10:
+
+### Profitability (weight: 25%)
+- Revenue Growth (YoY): {pct(rev_growth)} | EPS Growth (YoY): {pct(eps_growth)}
+- Gross margin: {pct(gross_margin)} | Operating margin: {pct(op_margin)} | Net margin: {pct(net_margin)}
+- EBITDA margin: {f"{ebitda_margin}%" if ebitda_margin else "N/A"} | FCF margin: {f"{fcf_margin}%" if fcf_margin else "N/A"}
+- ROE: {pct(roe)} | ROA: {pct(roa)}
+
+**Benchmark ranges — score against these, adjusted for sector:**
+
+| Metric | Healthy Range | Flag if Below | Actual |
+|---|---|---|---|
+| Gross margin | 40–70% (software/tech), 20–50% (other) | < 20% | {pct(gross_margin)} |
+| Operating margin | 15–30% | < 10% | {pct(op_margin)} |
+| Net margin | 10–25% | < 5% | {pct(net_margin)} |
+| EBITDA margin | 20%+ | < 15% | {f"{ebitda_margin}%" if ebitda_margin else "N/A"} |
+| FCF margin | 10–15%+ | < 8% | {f"{fcf_margin}%" if fcf_margin else "N/A"} |
+| Revenue growth (1Y) | 20%+ for growth stocks | < 10% | {pct(rev_growth)} |
+| EPS growth | 20%+ annually | < 15% | {pct(eps_growth)} |
+| ROE | 15–25%+ | < 12% | {pct(roe)} |
+| ROA | 8–12%+ | < 5% | {pct(roa)} |
+
+*Note: A company below multiple thresholds is not automatically a sell — context matters. But flag every miss explicitly and explain whether it's structural or temporary.*
+
+### Capital Efficiency — CORE METRIC (weight: 25%)
+- ROIC (Return on Invested Capital) — current and 5-year trend (estimate from training knowledge)
+- WACC estimate for this company (use beta of {num(beta)}, current 10Y UST yield, ~5% ERP)
+- **ROIC vs WACC spread**: is the company creating or destroying economic value?
+  - Spread > 5%: exceptional compounder
+  - Spread 2–5%: solid
+  - Spread < 2%: marginal
+  - Spread negative: value destruction
+- ROE: {pct(roe)} (note: if inflated by leverage, use ROIC as primary metric)
+
+### Cash Flow Quality — FRAUD/MANIPULATION CHECK (weight: 20%)
+- Free Cash Flow (TTM): {bn(free_cf)} | Operating Cash Flow (TTM): {bn(op_cashflow)}
+- **Accruals ratio**: {f"{accruals_ratio}%" if accruals_ratio is not None else "N/A"} — (Net Income − Operating Cash Flow) / Total Assets. Negative = quality signal. Positive = earnings not backed by cash = red flag.
+- FCF conversion rate (FCF / Net Income): {f"{fcf_conversion}%" if fcf_conversion else "N/A"} — should be close to or above 100%
+- FCF yield at current price: {f"{fcf_yield}%" if fcf_yield else "N/A"}
+
+### Balance Sheet Strength (weight: 15%)
+- Total Debt: {bn(total_debt)} | Cash: {bn(total_cash)} | Net Debt: {bn(net_debt)}
+- Net Debt / EBITDA: {num(net_debt_ebitda)}
+- Debt / Equity: {num(debt_eq)} | Current Ratio: {num(current_ratio)}
+- Any covenant risks or upcoming debt maturities?
+
+### Quality Acceleration (weight: 15%) — NEW
+*Static quality is priced in. Improving quality is where the edge is.*
+- Is ROIC improving or declining over the last 3 years?
+- Is gross margin trend positive or negative?
+- Is FCF conversion improving?
+- Revenue growth: accelerating, stable, or decelerating? (Current YoY: {pct(rev_growth)})
+- Verdict: Quality Accelerating | Quality Stable | Quality Deteriorating
+
+**FUNDAMENTAL QUALITY SCORE: X/10**
+Justify the score. Flag the 2 biggest risks in the fundamentals.
+
+---
+
+# PART 2 — COMPETITIVE MOAT
+
+Rate the moat: **Weak / Moderate / Strong / Exceptional**
+
+For each moat source, give a concrete example or metric — not a generic statement:
+
+| Moat Source | Present? | Evidence |
+|---|---|---|
+| Brand power | Y/N | e.g. NPS scores, price premium vs generic |
+| Network effects | Y/N | e.g. user growth → value loop |
+| Switching costs | Y/N | e.g. ERP lock-in, data portability |
+| Cost advantages | Y/N | e.g. scale, vertical integration |
+| IP / patents | Y/N | e.g. patent cliff dates, R&D pipeline |
+| Regulatory barriers | Y/N | e.g. licences, compliance moat |
+
+**Most important:** Is the moat *widening or narrowing*? A shrinking moat at a high multiple is a trap.
+
+---
+
+# PART 2B — STEWARDSHIP & MANAGEMENT QUALITY
+*Capital allocation is the single most important thing a CEO does. Most analysts underweight it. Don't.*
+
+### Capital Allocation Discipline
+- How has management deployed excess cash historically? (reinvestment, M&A, buybacks, dividends — rank by frequency)
+- **Buyback quality check:** Does management buy back stock when it's cheap or when it's expensive?
+- **M&A track record:** Any major acquisitions in the past 5 years? Did they create or destroy value?
+- Is the company investing enough in R&D and capex to maintain competitive position?
+- Verdict: **Excellent / Good / Mixed / Poor capital allocator**
+
+### Governance & Incentives
+- How is management compensated? Is it tied to revenue growth (easy to game), EPS (can be manipulated via buybacks), or ROIC/FCF (aligned with shareholders)?
+- CEO/CFO tenure: experienced or recently appointed?
+- Founder-led or professional management?
+- Is the board independent or captured by management?
+- Any red flags: excessive dilution, related-party transactions, restatements, auditor changes?
+
+### Track Record
+- Has management delivered on past guidance and promises?
+- How did management behave during the last market downturn or company-specific crisis?
+- Verdict: **High confidence in management / Neutral / Concern about management**
+
+---
+
+# PART 3 — EARNINGS QUALITY & ANALYST EXPECTATIONS
+
+*This section addresses post-earnings announcement drift (PEAD) — one of the most durable return anomalies in academic finance.*
+
+### Earnings Surprise History
+- Last 4 quarters: beat / miss / in-line vs consensus (EPS and revenue)
+- Average surprise magnitude
+- Pattern: are beats getting bigger, smaller, or inconsistent?
+
+### Analyst Estimate Revision Trend — KEY SIGNAL
+- Direction of EPS estimate revisions over last 90 days: UP / DOWN / FLAT
+- Are more analysts upgrading or downgrading?
+- **This matters:** stocks with rising estimate revisions systematically outperform.
+- Consensus EPS current year: {num(eps_curr)} | Next year: {num(eps_fwd)}
+- Analyst count: {analyst_count or "N/A"} | Recommendations: {analyst_recs_str}
+- Price Targets — Mean: ${num(target_mean)}, High: ${num(target_high)}, Low: ${num(target_low)} | Upside to mean target: {upside}
+
+### Management Guidance
+- Did management raise, lower, or maintain guidance on the last call?
+- Is guidance typically conservative (beats consistently) or aggressive (misses frequently)?
+- Any notable language from the last earnings call transcript?
+
+---
+
+# PART 4 — VALUATION
+
+## Step 1: Multiple-Based Relative Valuation
+Provide current and 5-year average multiples and compare to sector median:
+
+| Multiple | Current | 5-Year Avg | Sector Median | Assessment |
+|---|---|---|---|---|
+| P/E (forward) | {num(pe_forward)} | | | |
+| EV/EBITDA | {num(ev_ebitda)} | | | |
+| EV/Sales | {num(ev_revenue)} | | | |
+| P/FCF | {num(pfcf)} | | | |
+| PEG ratio | {num(peg_ratio)} | | | |
+
+Is the stock cheap, fair, or expensive *relative to its own history* and *relative to peers*?
+
+## Step 2: DCF — Simplified 5-Year Model
+*Note: Use this as a sanity check on valuation, not as the primary thesis driver.*
+
+**Key inputs (live data):**
+- Revenue (TTM): {bn(total_rev)} | FCF (TTM): {bn(free_cf)}
+- Total Debt: {bn(total_debt)} | Cash: {bn(total_cash)} | Net Debt: {bn(net_debt)}
+- Shares Outstanding: {f"{shares_out/1e9:.3f}B" if shares_out else "N/A"} | Beta: {num(beta)}
+- Current Price: ${round(price_now, 2)} | Market Cap: {bn(market_cap)}
+
+**Revenue projections (Years 1–5):**
+Base case using historical CAGR ({pct(rev_growth)} YoY) with adjustments for known catalysts or headwinds.
+
+**WACC:**
+Estimate using risk-free rate (current 10Y UST yield), equity risk premium (~5%), and beta of {num(beta)}.
+
+**Terminal value:**
+- Perpetuity growth method (use 2.5–3% terminal growth for US companies)
+- Exit multiple method (use sector EV/EBITDA)
+- Average the two.
+
+**Sensitivity table:**
+
+| Scenario | Revenue CAGR | Terminal Growth | WACC | Intrinsic Value |
+|---|---|---|---|---|
+| Bear | | | | |
+| Base | | | | |
+| Bull | | | | |
+
+**Valuation Conclusion:**
+- Intrinsic value (base case): $X
+- Current price: ${round(price_now, 2)}
+- Upside / downside: Z%
+- Verdict: Undervalued / Fairly Valued / Overvalued
+
+---
+
+# PART 4B — ASYMMETRY CHECK
+*The single most important question: is the risk/reward structurally skewed in your favour?*
+
+### Downside Floor — What is the worst realistic outcome?
+- What does the stock trade at in a bear scenario? (From DCF sensitivity table above)
+- Is there a balance sheet floor? (Net cash: {bn(-net_debt if net_debt else None)}, hard assets, buyback support)
+- How much downside from current price (${round(price_now, 2)}) to the bear case? Express as %
+
+### Upside Ceiling — What is the best realistic outcome?
+- What does the stock trade at in a bull scenario?
+- What specific catalyst or re-rating event unlocks the upside?
+- Analyst mean target implies {upside} upside — is the bull case meaningfully beyond this?
+
+### Asymmetry Ratio
+- **Minimum threshold for investment: upside must be at least 3x the downside**
+- Express clearly: *"For every 1% of downside risk, there is X% of upside potential"*
+- Verdict: **Asymmetric (favourable) / Symmetric (neutral) / Negatively skewed (avoid)**
+
+### Optionality — Is there a free call option embedded?
+- Does the company have an emerging business segment, pipeline, or market expansion that is *not priced in*?
+
+---
+
+# PART 5 — INSTITUTIONAL FLOW & POSITIONING
+
+### Institutional Ownership
+- Total institutional ownership: {f"{round(inst_own*100,1)}%" if inst_own else "N/A"}
+- Recent 13F changes: net buying or selling by institutions over last 2 quarters?
+- Any high-conviction funds initiating or exiting?
+
+### Short Interest — SENTIMENT SIGNAL
+- Short interest: {f"{short_pct}% of float" if short_pct else "N/A"}
+- **Days-to-Cover (DTC):** {num(short_ratio)}
+  - DTC > 10: significant short conviction, potential headwind (or short squeeze fuel)
+  - DTC < 3: shorts are not loading up, low bearish conviction
+- Is short interest rising or falling? Trend matters.
+
+### Insider Activity
+- Any insider purchases in the last 6 months? (Buying is a signal; selling is noise unless heavy/pattern-based)
+- CEO/CFO stock grants vs open-market purchases — distinguish between them
+
+### ETF Ownership
+- Is this stock in major ETFs (SPY, QQQ, sector ETFs)?
+
+---
+
+# PART 6 — TECHNICAL ANALYSIS
+*Purpose: identify the right entry, avoid buying into structural downtrends.*
+
+### Trend Structure (Multi-Timeframe)
+
+| Timeframe | Trend | Evidence |
+|---|---|---|
+| Monthly | Bullish / Bearish / Neutral | {'Above 12M MA (bullish)' if price_now > ma200 else 'Below 12M MA (bearish)'} |
+| Weekly | Bullish / Bearish / Neutral | {'Above 50DMA (bullish structure)' if price_now > ma50 else 'Below 50DMA (bearish structure)'} |
+| Daily | Bullish / Bearish / Neutral | Price ${round(price_now,2)} vs 50DMA ${round(ma50,2)} |
+
+### 52-Week High Proximity — KEY SIGNAL
+- Current price: ${round(price_now, 2)} | 52W High: ${round(week52_high, 2)} | 52W Low: ${round(week52_low, 2)}
+- **Price as % of 52W high: {f"{pct_of_52w_high}%" if pct_of_52w_high else "N/A"}**
+- Signal: {'> 85% — Positive (George & Hwang, 2004: stocks near 52W high tend to continue outperforming)' if pct_of_52w_high and pct_of_52w_high > 85 else '70–85% — Neutral' if pct_of_52w_high and pct_of_52w_high > 70 else '< 70% — Negative'}
+
+### Moving Averages
+- 50DMA: ${round(ma50,2)} | 100DMA: ${round(ma100,2)} | 200DMA: ${round(ma200,2)}
+- Price vs 50DMA: {'above' if price_now > ma50 else 'below'} | vs 100DMA: {'above' if price_now > ma100 else 'below'} | vs 200DMA: {'above' if price_now > ma200 else 'below'}
+- **MA structure: {'Golden Cross (50DMA > 200DMA) — bullish' if ma50 > ma200 else 'Death Cross (50DMA < 200DMA) — bearish'}**
+- Is price above all three? {'Yes — Full bull alignment' if price_now > ma50 and price_now > ma100 and price_now > ma200 else 'No — mixed or bearish alignment'}
+
+### Momentum Indicators
+- **RSI (14-day):** {num(rsi_val)} — {'Overbought (>70)' if rsi_val and rsi_val > 70 else 'Oversold (<40)' if rsi_val and rsi_val < 30 else 'Neutral (40–70)'}
+- **MACD:** {num(macd_val)} vs Signal: {num(signal_val)} → {'Above signal line — bullish' if macd_val and signal_val and macd_val > signal_val else 'Below signal line — bearish'} | Histogram: {num(macd_hist)}
+- **Relative Strength vs S&P 500:** 3M: {f"{'+' if rs_3m and rs_3m > 0 else ''}{rs_3m}%" if rs_3m is not None else "N/A"} | 6M: {f"{'+' if rs_6m and rs_6m > 0 else ''}{rs_6m}%" if rs_6m is not None else "N/A"}
+
+### Volume Analysis
+- Volume today: {vol_today/1e6:.1f}M vs 20-day avg ({f"{vol_ratio}x" if vol_ratio else "N/A"})
+- Is price rising on above-average volume? (institutional accumulation)
+
+### Key Levels
+- Identify major support and resistance levels
+- Flag if this is a high-risk area (extended, overbought) vs a low-risk setup (base, breakout)
+
+---
+
+# PART 7 — TRADE PLAN
+
+Be specific. No ranges wider than 3–4%.
+
+**Ideal entry zone:** $X – $Y
+*(Justify: near support, post-pullback, breakout confirmation, etc. Reference current price of ${round(price_now,2)})*
+
+**Stop-loss:** $Z
+*(Below key support or moving average. This is where the thesis is wrong.)*
+
+**Target 1 (medium-term, 1–3 months):** $A
+**Target 2 (longer-term, 6–12 months):** $B
+
+**Risk-to-reward ratio:**
+- Risk: entry minus stop-loss
+- Reward: entry to target
+- Minimum acceptable: 2.5:1 for medium-term, 3:1 for longer-term
+
+---
+
+# PART 8 — COMPANY ROADMAP & CATALYSTS
+
+### Near-Term Catalysts (0–6 months) — Binary Events
+- **Next earnings date: {next_earnings}** — what are the key metrics to watch?
+- Any product launches or announcements expected?
+- Regulatory decisions or approvals pending?
+- Fed/macro events that directly affect this stock?
+- **For each: state the likely positive outcome, likely negative outcome, and your base case**
+
+### Medium-Term Catalysts (6–18 months) — Thesis Validation Points
+- Is the company on track to hit its own multi-year targets?
+- Are there contract renewals, partnership expansions, or new market entries expected?
+- Analyst estimate revision cycle: when do consensus numbers need to move up for the stock to re-rate?
+
+### Long-Term Catalysts (2–5 years) — Compounding Drivers
+- What is the total addressable market (TAM) and how much can this company realistically capture?
+- What is the 3–5 year revenue and margin destination if the bull case plays out?
+- Are there emerging business lines or technologies that could become material contributors?
+
+### Strategic Partnerships, Contracts & Backlog — Forward Revenue Anchor
+- Does the company have a disclosed revenue backlog or order book?
+- Any named partnerships with major companies or government agencies?
+- **Key question:** Is there a major deal or partnership the market is not fully pricing in?
+
+---
+
+# PART 8B — MARKET NARRATIVE & MARKET-IMPLIED ASSUMPTIONS
+
+### What Narrative Is the Market Currently Telling About This Stock?
+- In one sentence: what story does the market believe about this company right now?
+- Is this narrative new and gaining momentum, mature and fully priced, or fading?
+
+### Narrative Shifts — Where Are We in the Story Arc?
+- Has the dominant narrative changed in the last 6–12 months? How?
+- Is the stock in early adoption (cheap), peak hype (expensive), or narrative fatigue (potential opportunity)?
+
+### Market-Implied Assumptions — What Does the Current Price Require?
+*Work backwards from the current price of ${round(price_now,2)} (P/E fwd: {num(pe_forward)}, EV/EBITDA: {num(ev_ebitda)}).*
+- At the current multiples, what revenue growth rate is the market implying for years 1–5?
+- Are those assumptions reasonable, optimistic, or pessimistic relative to history and peers?
+- **State explicitly:** "For this price to be correct, the market is assuming X% revenue growth and Y% margins. Based on our analysis, this is [realistic / too optimistic / too pessimistic] because..."
+
+### Early Stress Signals
+- Are there any early signs that the current narrative is weakening?
+- What would cause the narrative to shift negatively?
+
+---
+
+# PART 8C — RISKS, THESIS BREAKERS & MONITORING
+
+### Key Risks (rank by severity)
+For each risk: describe it, quantify the potential impact, and state whether it is already priced in or not.
+
+1. **[Highest severity risk]** — Impact: / Priced in: Y/N
+2. **[Second risk]** — Impact: / Priced in: Y/N
+3. **[Third risk]** — Impact: / Priced in: Y/N
+
+### Thesis Breakers — What Would Make You Exit Immediately?
+- List 3 specific, concrete thesis breakers with current status
+
+### Early Warning Indicators — What to Monitor Monthly
+- [ ] Metric 1 — threshold:
+- [ ] Metric 2 — threshold:
+- [ ] Metric 3 — threshold:
+- [ ] Metric 4 — threshold:
+- [ ] Metric 5 — threshold:
+
+### 90-Day Checkpoints
+- Checkpoint 1 (fundamental): [e.g. Q results — did revenue growth accelerate?]
+- Checkpoint 2 (technical): [e.g. Is the stock holding above its 50DMA on pullbacks?]
+- Checkpoint 3 (narrative): [e.g. Are analyst estimates moving up or down?]
+- **Decision rule:** If 2 of 3 checkpoints fail, re-evaluate position sizing. If all 3 fail, exit.
+
+---
+
+# PART 9 — CONVICTION SCORE & FINAL VERDICT
+
+## Factor Scorecard
+
+Score each factor 1–10, then calculate weighted total:
+
+| Factor | Score (1–10) | Weight | Weighted Score |
+|---|---|---|---|
+| Macro regime alignment | /10 | 10% | |
+| Fundamental quality & margins | /10 | 15% | |
+| ROIC/WACC spread & capital efficiency | /10 | 10% | |
+| Earnings quality & accruals | /10 | 5% | |
+| Estimate revision trend | /10 | 10% | |
+| Asymmetry (upside/downside ratio) | /10 | 10% | |
+| Moat strength & direction | /10 | 10% | |
+| Stewardship & management quality | /10 | 10% | |
+| Market narrative & implied assumptions | /10 | 5% | |
+| Technical setup | /10 | 10% | |
+| Institutional flow & short interest | /10 | 5% | |
+| **TOTAL CONVICTION SCORE** | | 100% | **/10** |
+
+## Market-Beating Assessment
+
+Answer these directly:
+
+1. **Can {ticker} beat the S&P 500 over 12–18 months?** Yes / No / Uncertain — and why.
+2. **What is the primary driver of outperformance?**
+3. **What would make this thesis wrong?** (The single most important risk)
+4. **Is the current price (${round(price_now,2)}) a good entry point?** Yes / No / Wait for pullback
+
+## Bull / Bear / Base Case
+
+| Scenario | Probability | 12-month Price Target | Key Assumption |
+|---|---|---|---|
+| Bull | X% | $ | |
+| Base | X% | $ | |
+| Bear | X% | $ | |
+
+## Final Rating
+
+**STRONG BUY / BUY / NEUTRAL / SELL / STRONG SELL**
+
+**Conviction Score: X/10**
+
+*One-sentence investment thesis:*
+[The single clearest statement of why {ticker} will or will not outperform.]"""
 
     def stream_report():
         with httpx.stream(
@@ -295,7 +779,7 @@ Be direct and opinionated. Use markdown formatting. Keep total length to ~500 wo
                 "messages": [{"role": "user", "content": prompt}],
                 "stream": True,
             },
-            timeout=120,
+            timeout=300,
         ) as resp:
             if resp.status_code != 200:
                 yield f"data: {json.dumps({'text': 'Ollama error: ' + str(resp.status_code)})}\n\n"
