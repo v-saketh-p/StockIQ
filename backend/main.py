@@ -405,33 +405,38 @@ def get_stock_report(ticker: str):
     vol_avg20 = float(hist["Volume"].rolling(20).mean().iloc[-1])
     vol_ratio = round(vol_today / vol_avg20, 2) if vol_avg20 else None
 
-    # Relative strength vs SPY — use actual dates, not iloc offsets
-    rs_3m = rs_6m = None
+    # Returns vs SPY — date-aligned, showing both absolute and relative
+    stock_ret_3m = stock_ret_6m = spy_ret_3m = spy_ret_6m = rs_3m = rs_6m = None
     try:
         spy_hist = yf.Ticker("SPY").history(period="1y")["Close"].dropna()
 
-        # Strip timezones for simple comparison
         def strip_tz(s):
-            return s.copy().set_axis(s.index.tz_localize(None) if s.index.tz is None else s.index.tz_convert(None))
+            idx = s.index.tz_convert(None) if s.index.tz else s.index
+            return s.copy().set_axis(idx)
 
         c   = strip_tz(close)
         spy = strip_tz(spy_hist)
-        now_ts   = pd.Timestamp.now()
-        ago_3m   = now_ts - pd.DateOffset(months=3)
-        ago_6m   = now_ts - pd.DateOffset(months=6)
+        now_ts = pd.Timestamp.now()
 
         def price_at(series, target):
             sub = series[series.index >= target]
             return float(sub.iloc[0]) if not sub.empty else None
 
-        c_3m   = price_at(c,   ago_3m);  c_6m   = price_at(c,   ago_6m)
-        spy_3m = price_at(spy, ago_3m);  spy_6m = price_at(spy, ago_6m)
+        c_3m   = price_at(c,   now_ts - pd.DateOffset(months=3))
+        c_6m   = price_at(c,   now_ts - pd.DateOffset(months=6))
+        spy_3m = price_at(spy, now_ts - pd.DateOffset(months=3))
+        spy_6m = price_at(spy, now_ts - pd.DateOffset(months=6))
         spy_now = float(spy.iloc[-1])
 
-        if c_3m and spy_3m:
-            rs_3m = round((price_now / c_3m - 1) * 100 - (spy_now / spy_3m - 1) * 100, 1)
-        if c_6m and spy_6m:
-            rs_6m = round((price_now / c_6m - 1) * 100 - (spy_now / spy_6m - 1) * 100, 1)
+        if c_3m:   stock_ret_3m = round((price_now / c_3m - 1) * 100, 1)
+        if c_6m:   stock_ret_6m = round((price_now / c_6m - 1) * 100, 1)
+        if spy_3m: spy_ret_3m   = round((spy_now / spy_3m - 1) * 100, 1)
+        if spy_ret_3m is not None and spy_6m:
+            spy_ret_6m = round((spy_now / spy_6m - 1) * 100, 1)
+        if stock_ret_3m is not None and spy_ret_3m is not None:
+            rs_3m = round(stock_ret_3m - spy_ret_3m, 1)
+        if stock_ret_6m is not None and spy_ret_6m is not None:
+            rs_6m = round(stock_ret_6m - spy_ret_6m, 1)
     except Exception:
         pass
 
@@ -576,7 +581,7 @@ def get_stock_report(ticker: str):
 
 <div class="card-grid">
   <div class="card"><div class="card-label">Current price</div><div class="card-value">${round(price_now, 2)}</div><div class="card-sub">{'Daily change: ' + pos(round((price_now/float(info.get("previousClose",price_now))-1)*100,2)) + '%' if info.get('previousClose') else ''}</div></div>
-  <div class="card"><div class="card-label">1-year return</div><div class="card-value">{pos(yr_return)}%</div><div class="card-sub">vs S&P 500 RS 6M: {pos(rs_6m)}%</div></div>
+  <div class="card"><div class="card-label">1-year return</div><div class="card-value">{pos(yr_return)}%</div><div class="card-sub">SPY 6M: {pos(spy_ret_6m)}% &nbsp;|&nbsp; Stock 6M: {pos(stock_ret_6m)}%</div></div>
   <div class="card"><div class="card-label">Market cap</div><div class="card-value">{bn(market_cap)}</div><div class="card-sub">Revenue TTM: {bn(total_rev)}</div></div>
   <div class="card"><div class="card-label">P/E (forward)</div><div class="card-value">{num(pe_forward)}</div><div class="card-sub">Trailing P/E: {num(pe_trailing)}</div></div>
   <div class="card"><div class="card-label">EV / EBITDA</div><div class="card-value">{num(ev_ebitda)}</div><div class="card-sub">EV/Revenue: {num(ev_revenue)}</div></div>
@@ -605,7 +610,7 @@ def get_stock_report(ticker: str):
   <tr><td>MACD</td><td>{num(macd_val)}</td><td><span class="badge {macd_class}">{macd_label} crossover</span></td><td>100-Day MA</td><td>${round(ma100,2)} — <span class="badge {'badge-green' if price_now>ma100 else 'badge-red'}">{'Above' if price_now>ma100 else 'Below'}</span></td></tr>
   <tr><td>52W High proximity</td><td>{f'{pct_52w}%' if pct_52w else 'N/A'}</td><td><span class="badge {w52_class}">{'Positive >85%' if pct_52w and pct_52w>85 else 'Neutral 70-85%' if pct_52w and pct_52w>70 else 'Negative <70%'}</span></td><td>200-Day MA</td><td>${round(ma200,2)} — <span class="badge {'badge-green' if price_now>ma200 else 'badge-red'}">{'Above' if price_now>ma200 else 'Below'}</span></td></tr>
   <tr><td>Volume vs 20D avg</td><td>{f'{vol_ratio}x' if vol_ratio else 'N/A'}</td><td><span class="badge {'badge-green' if vol_ratio and vol_ratio>1.5 else 'badge-amber' if vol_ratio and vol_ratio>0.8 else 'badge-red'}">{'High' if vol_ratio and vol_ratio>1.5 else 'Normal' if vol_ratio and vol_ratio>0.8 else 'Low'}</span></td><td>52W High / Low</td><td>${round(week52_high,2)} / ${round(week52_low,2)}</td></tr>
-  <tr><td>RS vs S&P (3M / 6M)</td><td>{pos(rs_3m)}% / {pos(rs_6m)}%</td><td><span class="badge {'badge-green' if rs_6m and rs_6m>0 else 'badge-red'}">{'Outperforming' if rs_6m and rs_6m>0 else 'Underperforming'}</span></td><td>MA Structure</td><td><span class="badge {ma_class}">{ma_label}</span></td></tr>
+  <tr><td>Stock vs SPY (6M)</td><td>{ticker}: {pos(stock_ret_6m)}% &nbsp;|&nbsp; SPY: {pos(spy_ret_6m)}%</td><td><span class="badge {'badge-green' if rs_6m and rs_6m>0 else 'badge-red'}">{ticker} {'beats' if rs_6m and rs_6m>0 else 'trails'} SPY by {abs(round(rs_6m,1)) if rs_6m else 'N/A'}%</span></td><td>MA Structure</td><td><span class="badge {ma_class}">{ma_label}</span></td></tr>
 </table>
 </div>
 
@@ -624,63 +629,94 @@ def get_stock_report(ticker: str):
 
 """
 
-    # ── Ollama prompt: generate analysis sections as HTML ────────────────────
-    prompt = f"""You are an institutional equity research analyst. Write a hedge-fund-style equity research report on {ticker} ({info.get('longName', ticker)}) in HTML format.
+    # ── Groq prompt ───────────────────────────────────────────────────────────
+    system_msg = (
+        "You are a senior equity research analyst at a top-tier hedge fund. "
+        "You write institutional-quality, opinionated research with specific reasoning. "
+        "CRITICAL RULES: (1) NEVER invent, estimate, or guess any number — only reference "
+        "figures explicitly given in the LIVE DATA block. If a data point is missing, say "
+        "'data not available' rather than guessing. (2) Be direct and contrarian where "
+        "warranted — do not hedge every statement. (3) Every section must contain specific "
+        "reasoning, not generic platitudes. (4) The S&P 500 / SPY 6-month return is given "
+        "to you in LIVE DATA — do not use any other figure for it."
+    )
 
-LIVE DATA (use these exact numbers — do not invent different figures):
-Price: ${round(price_now,2)} | Market Cap: {bn(market_cap)} | Sector: {info.get('sector','N/A')} | Industry: {info.get('industry','N/A')}
+    prompt = f"""Write a hedge-fund-style equity research report on {ticker} ({info.get('longName', ticker)}) in HTML format.
+
+LIVE DATA — use ONLY these numbers, do not invent others:
+Ticker: {ticker} | Company: {info.get('longName', ticker)} | Sector: {info.get('sector','N/A')} | Industry: {info.get('industry','N/A')}
+Price: ${round(price_now,2)} | Market Cap: {bn(market_cap)} | Beta: {num(beta)}
+Stock 6M return: {pos(stock_ret_6m)}% | SPY 6M return: {pos(spy_ret_6m)}% | Outperformance vs SPY (6M): {pos(rs_6m)}%
+Stock 3M return: {pos(stock_ret_3m)}% | SPY 3M return: {pos(spy_ret_3m)}% | Outperformance vs SPY (3M): {pos(rs_3m)}%
+1-Year return: {pos(yr_return)}%
 Revenue TTM: {bn(total_rev)} | EBITDA: {bn(ebitda)} | Net Income: {bn(net_income)} | FCF: {bn(free_cf)}
-Revenue Growth: {pct(rev_growth)} | EPS Growth: {pct(eps_growth)} | ROE: {pct(roe)} | ROA: {pct(roa)}
-Gross Margin: {pct(gross_margin)} | Op Margin: {pct(op_margin)} | Net Margin: {pct(net_margin)}
-P/E Fwd: {num(pe_forward)} | EV/EBITDA: {num(ev_ebitda)} | EV/Rev: {num(ev_revenue)} | PEG: {num(peg_ratio)} | P/FCF: {num(pfcf)}
+Revenue Growth YoY: {pct(rev_growth)} | EPS Growth YoY: {pct(eps_growth)}
+Gross Margin: {pct(gross_margin)} | Op Margin: {pct(op_margin)} | Net Margin: {pct(net_margin)} | EBITDA Margin: {f'{ebitda_margin}%' if ebitda_margin else 'N/A'}
+ROE: {pct(roe)} | ROA: {pct(roa)} | FCF Conversion: {f'{fcf_conversion}%' if fcf_conversion else 'N/A'}
+P/E Forward: {num(pe_forward)} | P/E Trailing: {num(pe_trailing)} | EV/EBITDA: {num(ev_ebitda)} | EV/Revenue: {num(ev_revenue)} | PEG: {num(peg_ratio)} | P/FCF: {num(pfcf)}
 Debt/Equity: {num(debt_eq)} | Net Debt/EBITDA: {num(net_debt_ebitda)} | Current Ratio: {num(current_ratio)}
-FCF Conversion: {f'{fcf_conversion}%' if fcf_conversion else 'N/A'} | Accruals Ratio: {f'{accruals_ratio}%' if accruals_ratio is not None else 'N/A'}
-RSI: {num(rsi_val)} | MACD: {macd_label} | MA Structure: {ma_label} | 52W High proximity: {f'{pct_52w}%' if pct_52w else 'N/A'}
-Short Interest: {f'{short_pct}%' if short_pct else 'N/A'} | DTC: {num(short_ratio)} | Inst. Ownership: {f'{round(inst_own*100,1)}%' if inst_own else 'N/A'}
-Analyst consensus: {analyst_recs_str} | Price target mean: ${num(target_mean)} ({pos(upside_pct)}% upside)
-Next earnings: {next_earnings} | EPS current year: {num(eps_curr)} | EPS forward: {num(eps_fwd)}
-Beta: {num(beta)} | Total Debt: {bn(total_debt)} | Cash: {bn(total_cash)} | Shares: {f'{shares_out/1e9:.2f}B' if shares_out else 'N/A'}
+Total Debt: {bn(total_debt)} | Cash: {bn(total_cash)} | Net Debt: {bn(net_debt)}
+RSI (14d): {num(rsi_val)} | MACD: {macd_label} | MA50: ${round(ma50,2)} | MA200: ${round(ma200,2)} | MA Structure: {ma_label}
+52W High: ${round(week52_high,2)} | 52W Low: ${round(week52_low,2)} | % of 52W High: {f'{pct_52w}%' if pct_52w else 'N/A'}
+Short Interest: {f'{short_pct}%' if short_pct else 'N/A'} | Days to Cover: {num(short_ratio)} | Inst. Ownership: {f'{round(inst_own*100,1)}%' if inst_own else 'N/A'}
+Analyst recs: {analyst_recs_str} | Price target mean: ${num(target_mean)} | High: ${num(target_high)} | Low: ${num(target_low)} | Analysts: {analyst_count or 'N/A'}
+Upside to mean target: {pos(upside_pct)}%
+Next earnings: {next_earnings} | EPS (current yr): {num(eps_curr)} | EPS (forward): {num(eps_fwd)}
 
-AVAILABLE CSS CLASSES (use these exactly as shown):
-- Sections: <div class="section"><div class="section-title">Title</div>...</div>
-- Subsections: <div class="sub-title">SUBTITLE</div>
-- White cards: <div class="raised"><strong>Title</strong><p>...</p></div>
-- Two columns: <div class="row"><div class="raised">...</div><div class="raised">...</div></div>
-- Badges (inline): <span class="badge badge-green">text</span> or badge-amber or badge-red or badge-blue
-- Verdict boxes: <div class="verdict v-green"><strong>Title</strong><p>...</p></div> (or v-amber, v-red)
-- Warning box: <div class="flag"><strong>⚠ Warning</strong><p>...</p></div>
-- Risk items: <div class="risk-item risk-high"><strong>Risk</strong><p>...</p></div> (or risk-med, risk-low)
-- Opportunity: <div class="opt"><strong>Opportunity</strong><p>...</p></div>
-- Final box: <div class="final"><h2>RATING</h2><p>Conviction: X/10</p><p><em>One-liner thesis</em></p></div>
-- Monitoring list: <ul class="check"><li>metric — threshold</li></ul>
-- Tables: standard <table><tr><th>/<td> with badge spans inside cells
+CSS CLASSES available — use exactly as shown:
+<div class="section"><div class="section-title">Title</div>...</div>
+<div class="sub-title">SUBTITLE</div>
+<div class="raised"><strong>Title</strong><p>text</p></div>
+<div class="row"><div class="raised">left</div><div class="raised">right</div></div>
+<span class="badge badge-green">text</span>  (also badge-amber, badge-red, badge-blue)
+<div class="verdict v-green"><strong>Title</strong><p>text</p></div>  (also v-amber, v-red)
+<div class="flag"><strong>⚠ Warning</strong><p>text</p></div>
+<div class="risk-item risk-high"><strong>Risk</strong><p>text</p></div>  (also risk-med, risk-low)
+<div class="opt"><strong>Opportunity</strong><p>text</p></div>
+<div class="final"><h2>RATING</h2><p>Conviction: X/10</p><p><em>thesis</em></p></div>
+<div class="card-grid"><div class="card"><div class="card-label">label</div><div class="card-value">value</div><div class="card-sub">sub</div></div></div>
+<ul class="check"><li>item</li></ul>
+Standard <table><tr><th>/<td> with badge spans inside cells
 
-Write ONLY HTML body content (no <html>, <head>, <style>, or <body> tags).
-Be direct and opinionated. Use the badge classes to colour-code every verdict.
-Follow this exact structure:
+Output ONLY HTML body content — no <html>, <head>, <style>, or <body> tags.
+Be specific, opinionated, and direct. Colour-code every verdict with badges.
+Write 4–5 substantive sentences per sub-section minimum — no one-liners.
 
-Part 0 — Macro Regime (growth/rate/risk-appetite verdicts with badge colours)
-Part 1 — Business & Fundamentals (business model, profitability score /10, ROIC/WACC estimate, cash flow quality, quality acceleration verdict)
-Part 2 — Competitive Moat (table with moat sources + evidence, moat rating badge, widening/narrowing verdict)
-Part 2B — Stewardship & Management (capital allocation, governance, track record)
-Part 3 — Earnings Quality & Estimates (beat/miss history, estimate revision trend, guidance style)
-Part 4B — Asymmetry Check (downside floor, upside ceiling, asymmetry ratio, free optionality)
-Part 5 — Institutional Flow
-  REQUIRED: Open with a .card-grid containing exactly these four cards using the numbers from LIVE DATA:
-    Card 1 — "Analyst consensus" showing the buy/hold/sell breakdown and total analysts
-    Card 2 — "Avg price target" showing the mean target vs current price (above/below)
-    Card 3 — "Short interest" showing short % of float and DTC (days to cover)
-    Card 4 — "Institutional ownership" showing the % held by institutions
-  Then a .raised block: identify {ticker}'s single closest publicly-traded competitor (by business model, not just sector). Write a balanced 2–3 paragraph comparison covering: leverage/debt structure, valuation multiple, business model differentiation, and which is the better risk-adjusted choice right now with a reason. Use badge colours for verdicts.
-  Then comment on any notable strategic investors, major recent index inclusions, or insider activity worth flagging.
-  Close with one verdict box on overall institutional sentiment.
-Part 6 — Technical Analysis (trend table, 52W high signal, key support/resistance, chart pattern)
-Part 7 — Trade Plan (entry zone, stop-loss, target 1, target 2, risk:reward ratio — all in specific $ figures)
-Part 8 — Catalysts & Roadmap (near/medium/long term, strategic partnerships)
-Part 8B — Market Narrative (current narrative, implied assumptions at current price)
-Part 8C — Risks & Monitoring (3 ranked risks as risk-item divs, thesis breakers, monitoring checklist as ul.check)
-Part 9 — Conviction Scorecard (HTML table with all 11 factors scored, weighted total, final verdict box)
-Bull/Base/Bear scenario table"""
+STRUCTURE (follow exactly, 6 sections):
+
+Section 1 — Business & Competitive Position
+  - What this company actually does and how it makes money (2-3 sentences, specific)
+  - Profitability quality: score /10 with reasoning using the margin and return figures from LIVE DATA
+  - Competitive moat: table with columns [Moat source | Evidence | Strength] — 4-5 rows, use your knowledge of {ticker}'s business
+  - Capital allocation & management track record
+  - One verdict box: overall fundamental quality score
+
+Section 2 — Earnings Quality & Valuation
+  - Earnings quality: are the margins sustainable? Is FCF conversion healthy or distorted?
+  - Valuation: is {ticker} cheap, fair, or expensive vs its own history and sector peers? Reference the P/E, EV/EBITDA, P/FCF, PEG from LIVE DATA
+  - Asymmetry: what is the realistic downside floor vs upside ceiling at current price?
+  - Bull/base/bear scenario table with 12-month price targets and key assumptions
+
+Section 3 — Institutional Flow & Competitive Landscape
+  - Open with a card-grid of exactly 4 cards: analyst consensus (buy/hold/sell count), avg price target vs current price, short interest % + DTC, institutional ownership %
+  - Identify {ticker}'s single closest publicly-traded competitor. Write 2-3 paragraphs comparing: leverage, valuation multiples, business model, and which is the better risk-adjusted buy today
+  - Notable strategic investors, index inclusions, or insider activity
+  - Verdict box: overall institutional sentiment
+
+Section 4 — Technical Setup & Trade Plan
+  - Trend analysis: MA structure, RSI signal, MACD signal, volume — reference exact numbers from LIVE DATA
+  - Key support levels (use MA50/MA200 from LIVE DATA as anchors) and resistance (52W high from LIVE DATA)
+  - Specific trade plan: entry zone in $, stop-loss in $, Target 1 in $, Target 2 in $, risk:reward ratio
+
+Section 5 — Catalysts, Risks & Monitoring
+  - 3 near/medium/long-term catalysts as opt divs
+  - 3 ranked risks as risk-item divs (risk-high / risk-med / risk-low) — be specific about what breaks the thesis
+  - Monitoring checklist as ul.check — 5-6 specific metrics with thresholds to watch
+
+Section 6 — Conviction Scorecard & Final Verdict
+  - HTML table: 8 factors (Fundamentals, Valuation, Moat, Earnings Quality, Technical, Institutional Flow, Risk/Reward, Macro) each scored /10 with a one-line rationale
+  - Weighted total score /10
+  - Final verdict box (.final) with rating, conviction score, and one-liner investment thesis"""
 
     footer_html = """
 <p style="font-size:11px; color:var(--r-sub); margin-top:24px; padding-top:12px; border-top:1px solid var(--r-border);">
@@ -704,9 +740,12 @@ Data sourced from yfinance. AI analysis generated by Groq / llama-3.3-70b — ve
                 },
                 json={
                     "model": "llama-3.3-70b-versatile",
-                    "messages": [{"role": "user", "content": prompt}],
+                    "messages": [
+                        {"role": "system", "content": system_msg},
+                        {"role": "user",   "content": prompt},
+                    ],
                     "stream": True,
-                    "temperature": 0.3,
+                    "temperature": 0.25,
                     "max_tokens": 8192,
                 },
                 timeout=120,
