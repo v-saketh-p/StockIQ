@@ -8,6 +8,7 @@ import MetricCard from "./MetricCard";
 import TechnicalGauge from "./TechnicalGauge";
 import AIReport from "./AIReport";
 import ChatPanel from "./ChatPanel";
+import FinancialCharts from "./FinancialCharts";
 
 interface StockData {
   ticker: string;
@@ -19,12 +20,28 @@ interface StockData {
   preMarket:  { price: number | null; changePct: number | null };
   postMarket: { price: number | null; changePct: number | null };
   marketCap: number | null;
-  valuation: { peTrailing: number | null; peForward: number | null; evEbitda: number | null };
+  fiftyTwoWeekHigh: number | null;
+  fiftyTwoWeekLow:  number | null;
+  beta: number | null;
+  eps:  number | null;
+  revenueB: number | null;
+  valuation: {
+    peTrailing: number | null;
+    evEbitda:   number | null;
+    evRevenue:  number | null;
+    priceToBook: number | null;
+  };
   profitability: {
     roe: number | null; grossMargin: number | null; operatingMargin: number | null;
     netMargin: number | null; revenueGrowth: number | null; epsGrowth: number | null;
   };
-  balanceSheet: { debtEquity: number | null; freeCashFlow: number | null };
+  balanceSheet: {
+    debtEquity: number | null;
+    freeCashFlow: number | null;
+    totalCash: number | null;
+    totalDebt: number | null;
+    dividendYield: number | null;
+  };
   technicals: {
     rsi: number | null; macd: number | null; macdSignal: number | null;
     vwap: number | null; ma50: number; ma200: number; volume: number; volumeAvg20: number;
@@ -145,7 +162,6 @@ export default function StockDashboard({
       {/* ── Hero ── */}
       <div className="rounded-2xl overflow-hidden"
         style={{ background: "var(--surface)", border: "1px solid var(--border2)", boxShadow: "0 1px 4px var(--shadow)" }}>
-        {/* Rainbow accent bar */}
         <div className="h-0.5" style={{ background: "linear-gradient(90deg, #3b82f6 0%, #8b5cf6 50%, #ec4899 100%)" }} />
 
         <div className="px-6 py-5 flex items-start justify-between gap-4">
@@ -156,7 +172,6 @@ export default function StockDashboard({
                 {data.ticker}
               </h1>
 
-              {/* Day change */}
               <span className="flex items-center gap-1.5 text-sm font-bold px-3 py-1.5 rounded-lg"
                 style={{
                   background: up ? "rgba(34,197,94,0.12)" : "rgba(239,68,68,0.12)",
@@ -168,7 +183,6 @@ export default function StockDashboard({
                 <span className="font-normal text-xs" style={{ opacity: 0.6 }}>1D</span>
               </span>
 
-              {/* Pre-market */}
               {pre !== null && pre !== undefined && (
                 <span className="flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-lg"
                   style={{ background: "rgba(107,114,128,0.08)", color: pre >= 0 ? "var(--green)" : "var(--red)", border: "1px solid rgba(107,114,128,0.15)" }}>
@@ -177,7 +191,6 @@ export default function StockDashboard({
                 </span>
               )}
 
-              {/* After-hours */}
               {post !== null && post !== undefined && (
                 <span className="flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-lg"
                   style={{ background: "rgba(245,158,11,0.08)", color: post >= 0 ? "var(--green)" : "var(--red)", border: "1px solid rgba(245,158,11,0.15)" }}>
@@ -187,7 +200,6 @@ export default function StockDashboard({
               )}
             </div>
 
-            {/* Company name + sector + industry */}
             <div className="flex items-center gap-2 flex-wrap mt-0.5">
               <span className="text-sm font-medium" style={{ color: "var(--muted2)" }}>{data.name}</span>
               {data.sector && (
@@ -204,8 +216,31 @@ export default function StockDashboard({
               )}
             </div>
 
-            <div className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>
-              {fmtBig(data.marketCap)} market cap
+            {/* Key stats row under name */}
+            <div className="flex items-center gap-4 flex-wrap mt-1">
+              <span className="text-xs" style={{ color: "var(--muted)" }}>
+                {fmtBig(data.marketCap)} mkt cap
+              </span>
+              {data.revenueB !== null && (
+                <span className="text-xs" style={{ color: "var(--muted)" }}>
+                  Rev (TTM): <strong style={{ color: "var(--muted2)" }}>${data.revenueB.toFixed(2)}B</strong>
+                </span>
+              )}
+              {data.eps !== null && (
+                <span className="text-xs" style={{ color: "var(--muted)" }}>
+                  EPS (TTM): <strong style={{ color: "var(--muted2)" }}>${data.eps.toFixed(2)}</strong>
+                </span>
+              )}
+              {data.beta !== null && (
+                <span className="text-xs" style={{ color: "var(--muted)" }}>
+                  Beta: <strong style={{ color: "var(--muted2)" }}>{data.beta.toFixed(2)}</strong>
+                </span>
+              )}
+              {data.fiftyTwoWeekHigh !== null && data.fiftyTwoWeekLow !== null && (
+                <span className="text-xs" style={{ color: "var(--muted)" }}>
+                  52w: <strong style={{ color: "var(--muted2)" }}>${data.fiftyTwoWeekLow.toFixed(2)} – ${data.fiftyTwoWeekHigh.toFixed(2)}</strong>
+                </span>
+              )}
             </div>
           </div>
 
@@ -239,10 +274,10 @@ export default function StockDashboard({
 
       {/* ── Quick stats strip ── */}
       <div className="grid grid-cols-4 gap-3">
-        <QuickStat label="P/E (Forward)"  value={val.peForward  !== null ? `${fmt(val.peForward, 1)}x`  : "N/A"} color="#f59e0b" />
-        <QuickStat label="Gross Margin"   value={prof.grossMargin !== null ? `${fmt(prof.grossMargin, 1)}%`  : "N/A"} color="#22c55e" />
-        <QuickStat label="RSI 14"         value={tech.rsi !== null ? fmt(tech.rsi, 1) : "N/A"} color="#06b6d4" />
-        <QuickStat label="Vol / 20d Avg"  value={volRatio !== null ? `${volRatio.toFixed(2)}x` : "N/A"} color="#8b5cf6" />
+        <QuickStat label="P/E (Trailing)"  value={val.peTrailing !== null ? `${fmt(val.peTrailing, 1)}x` : "N/A"} color="#f59e0b" />
+        <QuickStat label="Gross Margin"    value={prof.grossMargin !== null ? `${fmt(prof.grossMargin, 1)}%` : "N/A"} color="#22c55e" />
+        <QuickStat label="RSI 14"          value={tech.rsi !== null ? fmt(tech.rsi, 1) : "N/A"} color="#06b6d4" />
+        <QuickStat label="Vol / 20d Avg"   value={volRatio !== null ? `${volRatio.toFixed(2)}x` : "N/A"} color="#8b5cf6" />
       </div>
 
       {/* ── Chart ── */}
@@ -270,53 +305,67 @@ export default function StockDashboard({
         ))}
       </div>
 
-      {/* ── Tab content ── */}
-
-      {/* Overview metrics — only render when active */}
       {activeTab === "overview" && (
+        <>
+        {/* ── Financial charts ── */}
+        <FinancialCharts ticker={data.ticker} />
+
         <div className="grid grid-cols-2 gap-4">
 
           {/* Valuation */}
           <MetricPanel title="Valuation" color="#f59e0b" icon={<DollarSign size={12} />}>
-            <MetricCard label="P/E (trailing)" value={fmt(val.peTrailing)} />
-            <MetricCard label="P/E (forward)"  value={fmt(val.peForward)} />
-            <MetricCard label="EV / EBITDA"    value={fmt(val.evEbitda)} />
+            <MetricCard label="P/E (Trailing)"  value={fmt(val.peTrailing, 2, "x")} />
+            <MetricCard label="EPS (TTM)"       value={data.eps !== null ? `$${data.eps.toFixed(2)}` : "N/A"} />
+            <MetricCard label="EV / EBITDA"     value={fmt(val.evEbitda, 2, "x")} />
+            <MetricCard label="EV / Revenue"    value={fmt(val.evRevenue, 2, "x")} />
+            <MetricCard label="Price / Book"    value={fmt(val.priceToBook, 2, "x")} />
           </MetricPanel>
 
           {/* Profitability */}
           <MetricPanel title="Profitability" color="#22c55e" icon={<BarChart2 size={12} />}>
-            <MetricCard label="Gross Margin"     value={fmt(prof.grossMargin, 2, "%")}     positive={prof.grossMargin     !== null ? prof.grossMargin > 0     : null} />
-            <MetricCard label="Operating Margin" value={fmt(prof.operatingMargin, 2, "%")} positive={prof.operatingMargin !== null ? prof.operatingMargin > 0 : null} />
-            <MetricCard label="Net Margin"       value={fmt(prof.netMargin, 2, "%")}       positive={prof.netMargin       !== null ? prof.netMargin > 0       : null} />
-            <MetricCard label="ROE"              value={fmt(prof.roe, 2, "%")}             positive={prof.roe             !== null ? prof.roe > 0             : null} />
-            <MetricCard label="Revenue Growth"   value={fmt(prof.revenueGrowth, 2, "%")}  positive={prof.revenueGrowth   !== null ? prof.revenueGrowth > 0   : null} />
-            <MetricCard label="EPS Growth"       value={fmt(prof.epsGrowth, 2, "%")}      positive={prof.epsGrowth       !== null ? prof.epsGrowth > 0       : null} />
+            <MetricCard label="Gross Margin"           value={fmt(prof.grossMargin, 2, "%")}     positive={prof.grossMargin     !== null ? prof.grossMargin > 0     : null} />
+            <MetricCard label="Operating Margin"       value={fmt(prof.operatingMargin, 2, "%")} positive={prof.operatingMargin !== null ? prof.operatingMargin > 0 : null} />
+            <MetricCard label="Net Margin"             value={fmt(prof.netMargin, 2, "%")}       positive={prof.netMargin       !== null ? prof.netMargin > 0       : null} />
+            <MetricCard label="ROE"                    value={fmt(prof.roe, 2, "%")}             positive={prof.roe             !== null ? prof.roe > 0             : null} />
+            <MetricCard label="Revenue Growth (YoY)"  value={fmt(prof.revenueGrowth, 2, "%")}  positive={prof.revenueGrowth   !== null ? prof.revenueGrowth > 0   : null} />
+            <MetricCard label="EPS Growth (YoY)"      value={fmt(prof.epsGrowth, 2, "%")}      positive={prof.epsGrowth       !== null ? prof.epsGrowth > 0       : null} />
           </MetricPanel>
 
           {/* Balance Sheet */}
           <MetricPanel title="Balance Sheet" color="#3b82f6" icon={<Layers size={12} />}>
-            <MetricCard label="Debt / Equity"  value={fmt(bs.debtEquity)}
-              positive={bs.debtEquity !== null ? bs.debtEquity < 50 : null} />
-            <MetricCard label="Free Cash Flow"
-              value={bs.freeCashFlow !== null ? `$${(bs.freeCashFlow / 1e9).toFixed(2)}B` : "N/A"}
+            <MetricCard label="Free Cash Flow (TTM)"
+              value={bs.freeCashFlow !== null ? `$${bs.freeCashFlow.toFixed(2)}B` : "N/A"}
               positive={bs.freeCashFlow !== null ? bs.freeCashFlow > 0 : null} />
+            <MetricCard label="Total Cash"
+              value={bs.totalCash !== null ? `$${bs.totalCash.toFixed(2)}B` : "N/A"}
+              positive={null} />
+            <MetricCard label="Total Debt"
+              value={bs.totalDebt !== null ? `$${bs.totalDebt.toFixed(2)}B` : "N/A"}
+              positive={null} />
+            <MetricCard label="Debt / Equity (%)"
+              value={bs.debtEquity !== null ? fmt(bs.debtEquity, 2) : "N/A"}
+              positive={null} />
+            {bs.dividendYield !== null && (
+              <MetricCard label="Dividend Yield" value={`${bs.dividendYield.toFixed(2)}%`} positive={null} />
+            )}
           </MetricPanel>
 
           {/* Technicals */}
           <MetricPanel title="Technicals" color="#06b6d4" icon={<Activity size={12} />}>
             <TechnicalGauge label="RSI (14)" value={tech.rsi} min={0} max={100} low={30} high={70} />
-            <MetricCard label="MACD"      value={fmt(tech.macd)}  positive={macdBull} note={macdBull ? "Bullish ↑" : "Bearish ↓"} />
-            <MetricCard label="VWAP"      value={tech.vwap !== null ? `$${fmt(tech.vwap)}` : "N/A"}
+            <MetricCard label="MACD"       value={fmt(tech.macd)}  positive={macdBull} note={macdBull ? "Bullish ↑" : "Bearish ↓"} />
+            <MetricCard label="VWAP"       value={tech.vwap !== null ? `$${fmt(tech.vwap)}` : "N/A"}
               positive={tech.vwap !== null ? data.price > tech.vwap : null}
               note={tech.vwap !== null ? (data.price > tech.vwap ? "↑ above" : "↓ below") : ""} />
             <MetricCard label="50-Day MA"  value={`$${fmt(tech.ma50)}`}  positive={data.price > tech.ma50}  note={data.price > tech.ma50  ? "↑ above" : "↓ below"} />
             <MetricCard label="200-Day MA" value={`$${fmt(tech.ma200)}`} positive={data.price > tech.ma200} note={data.price > tech.ma200 ? "↑ above" : "↓ below"} />
+            <MetricCard label="Beta"       value={data.beta !== null ? data.beta.toFixed(2) : "N/A"} positive={null} />
           </MetricPanel>
 
         </div>
+        </>
       )}
 
-      {/* AI Report — always mounted so report state persists across tab switches; hidden when not active */}
       <div style={{ display: activeTab === "research" ? "block" : "none" }}>
         <AIReport ticker={data.ticker} autoTrigger={activeTab === "research"} />
       </div>
@@ -327,7 +376,6 @@ export default function StockDashboard({
       <ChatPanel ticker={data.ticker} companyName={data.name} onClose={() => setChatOpen(false)} />
     )}
 
-    {/* Floating chat button */}
     <button
       onClick={() => setChatOpen(o => !o)}
       title={chatOpen ? "Close chat" : `Chat about ${data.ticker}`}
