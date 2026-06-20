@@ -296,11 +296,57 @@ def get_chart(ticker: str, period: str = "1y", interval: str = "1d"):
     return {"data": data, "prevClose": prev_close}
 
 
+REPORT_CSS = """
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; color: #1a1a1a; background: #fff; padding: 24px; max-width: 900px; margin: 0 auto; }
+h1 { font-size: 22px; font-weight: 600; margin-bottom: 4px; }
+.meta { color: #666; font-size: 13px; margin-bottom: 20px; }
+.badges { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+.badge { font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 20px; display: inline-block; }
+.badge-amber { background: #fff8e6; color: #b45309; border: 1px solid #fcd34d; }
+.badge-blue  { background: #eff6ff; color: #1d4ed8; border: 1px solid #93c5fd; }
+.badge-green { background: #f0fdf4; color: #15803d; border: 1px solid #86efac; }
+.badge-red   { background: #fef2f2; color: #b91c1c; border: 1px solid #fca5a5; }
+.card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 14px 0; }
+.card { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; }
+.card-label { font-size: 11px; color: #6b7280; margin-bottom: 4px; }
+.card-value { font-size: 18px; font-weight: 600; }
+.card-sub { font-size: 11px; color: #9ca3af; margin-top: 2px; }
+.section { margin: 28px 0 0; }
+.section-title { font-size: 17px; font-weight: 600; border-bottom: 1px solid #e5e7eb; padding-bottom: 7px; margin-bottom: 14px; }
+.sub-title { font-size: 12px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 16px 0 6px; }
+.raised { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px 16px; margin: 10px 0; }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 10px 0; }
+th { text-align: left; color: #6b7280; font-weight: 600; padding: 7px 8px; border-bottom: 1px solid #e5e7eb; background: #f9fafb; }
+td { padding: 7px 8px; border-bottom: 1px solid #f3f4f6; vertical-align: top; }
+.verdict { border-left: 3px solid; padding: 12px 14px; margin: 12px 0; border-radius: 0 6px 6px 0; }
+.v-green { border-color: #16a34a; background: #f0fdf4; }
+.v-amber { border-color: #d97706; background: #fffbeb; }
+.v-red   { border-color: #dc2626; background: #fef2f2; }
+.flag { background: #fffbeb; border-left: 3px solid #d97706; border-radius: 0 6px 6px 0; padding: 12px 14px; margin: 12px 0; }
+.final { text-align: center; padding: 28px; border: 2px solid #d97706; border-radius: 10px; margin: 20px 0; background: #fffbeb; }
+.final h2 { font-size: 20px; font-weight: 700; }
+p { margin: 6px 0; line-height: 1.6; }
+strong { font-weight: 600; }
+.risk-item { border-left: 3px solid; padding: 10px 14px; margin: 8px 0; border-radius: 0 4px 4px 0; }
+.risk-high { border-color: #dc2626; background: #fef2f2; }
+.risk-med  { border-color: #d97706; background: #fffbeb; }
+.risk-low  { border-color: #16a34a; background: #f0fdf4; }
+ul.check { padding: 0; list-style: none; }
+ul.check li { padding: 3px 0; }
+ul.check li::before { content: "☐ "; }
+.opt { background: #f0fdf4; border: 1px solid #86efac; border-radius: 8px; padding: 12px 14px; margin: 10px 0; }
+ul { padding-left: 18px; margin: 8px 0; }
+li { margin: 4px 0; line-height: 1.5; }
+@media (max-width: 600px) { .row { grid-template-columns: 1fr; } }
+"""
+
 @app.get("/api/stock/{ticker}/report")
 def get_stock_report(ticker: str):
     ticker = ticker.upper()
-    t = yf.Ticker(ticker)
-    info = t.info
+    t      = yf.Ticker(ticker)
+    info   = t.info
 
     if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
         raise HTTPException(status_code=404, detail=f"Ticker '{ticker}' not found")
@@ -313,115 +359,293 @@ def get_stock_report(ticker: str):
     close = hist["Close"]
     hist.ta.rsi(length=14, append=True)
     hist.ta.macd(append=True)
-    hist.ta.vwap(append=True)
 
     rsi_val    = safe(hist["RSI_14"].iloc[-1])        if "RSI_14"       in hist.columns else None
     macd_val   = safe(hist["MACD_12_26_9"].iloc[-1])  if "MACD_12_26_9"  in hist.columns else None
     signal_val = safe(hist["MACDs_12_26_9"].iloc[-1]) if "MACDs_12_26_9" in hist.columns else None
-    vwap_cols  = [c for c in hist.columns if c.startswith("VWAP")]
-    vwap_val   = safe(hist[vwap_cols[0]].iloc[-1]) if vwap_cols else None
+    macd_hist  = safe(hist["MACDh_12_26_9"].iloc[-1]) if "MACDh_12_26_9" in hist.columns else None
 
-    ma50  = float(close.rolling(50).mean().iloc[-1])
-    ma200 = float(close.rolling(200).mean().iloc[-1])
-    price_now = float(info.get("currentPrice") or info.get("regularMarketPrice") or close.iloc[-1])
-    _prev     = info.get("previousClose") or info.get("regularMarketPreviousClose")
-    change    = round((price_now / float(_prev) - 1) * 100, 2) if _prev else 0.0
+    price_now   = float(info.get("currentPrice") or info.get("regularMarketPrice") or close.iloc[-1])
+    ma50        = float(close.rolling(50).mean().iloc[-1])
+    ma100       = float(close.rolling(100).mean().iloc[-1])
+    ma200       = float(close.rolling(200).mean().iloc[-1])
+    week52_high = float(close.rolling(252).max().iloc[-1])
+    week52_low  = float(close.rolling(252).min().iloc[-1])
+    pct_52w     = round(price_now / week52_high * 100, 1) if week52_high else None
+    yr_return   = round((price_now / float(close.iloc[0]) - 1) * 100, 1) if len(close) > 1 else None
 
     vol_today = int(hist["Volume"].iloc[-1])
     vol_avg20 = float(hist["Volume"].rolling(20).mean().iloc[-1])
     vol_ratio = round(vol_today / vol_avg20, 2) if vol_avg20 else None
 
-    roe          = safe(info.get("returnOnEquity"))
-    gross_margin = safe(info.get("grossMargins"))
-    op_margin    = safe(info.get("operatingMargins"))
-    net_margin   = safe(info.get("profitMargins"))
-    rev_growth   = safe(info.get("revenueGrowth"))
-    eps_growth   = safe(info.get("earningsGrowth"))
-    free_cf      = safe(info.get("freeCashflow"))
-    debt_eq      = safe(info.get("debtToEquity"))
-    pe_trailing  = safe(info.get("trailingPE"))
-    pe_forward   = safe(info.get("forwardPE"))
-    ev_ebitda    = safe(info.get("enterpriseToEbitda"))
-    market_cap   = safe(info.get("marketCap"))
+    # Relative strength vs SPY
+    rs_3m = rs_6m = None
+    try:
+        spy = yf.Ticker("SPY").history(period="1y")["Close"].dropna()
+        rs_3m = round((price_now / float(close.iloc[-63]) - 1) * 100 - (float(spy.iloc[-1]) / float(spy.iloc[-63]) - 1) * 100, 1)
+        rs_6m = round((price_now / float(close.iloc[-126]) - 1) * 100 - (float(spy.iloc[-1]) / float(spy.iloc[-126]) - 1) * 100, 1)
+    except Exception:
+        pass
 
-    def pct(v): return f"{round(v * 100, 2)}%" if v is not None else "N/A"
+    # Fundamentals
+    roe           = safe(info.get("returnOnEquity"))
+    roa           = safe(info.get("returnOnAssets"))
+    gross_margin  = safe(info.get("grossMargins"))
+    gross_margin  = gross_margin if (gross_margin and gross_margin > 0.001) else None
+    op_margin     = safe(info.get("operatingMargins"))
+    net_margin    = safe(info.get("profitMargins"))
+    rev_growth    = safe(info.get("revenueGrowth"))
+    eps_growth    = safe(info.get("earningsGrowth"))
+    free_cf       = safe(info.get("freeCashflow"))
+    op_cashflow   = safe(info.get("operatingCashflow"))
+    debt_eq       = safe(info.get("debtToEquity"))
+    current_ratio = safe(info.get("currentRatio"))
+    pe_trailing   = safe(info.get("trailingPE"))
+    pe_forward    = safe(info.get("forwardPE"))
+    peg_ratio     = safe(info.get("pegRatio"))
+    ev_ebitda     = safe(info.get("enterpriseToEbitda"))
+    ev_revenue    = safe(info.get("enterpriseToRevenue"))
+    market_cap    = safe(info.get("marketCap"))
+    beta          = safe(info.get("beta"))
+    total_rev     = safe(info.get("totalRevenue"))
+    ebitda        = safe(info.get("ebitda"))
+    net_income    = safe(info.get("netIncomeToCommon"))
+    total_debt    = safe(info.get("totalDebt"))
+    total_cash    = safe(info.get("totalCash"))
+    total_assets  = safe(info.get("totalAssets"))
+    shares_out    = safe(info.get("sharesOutstanding"))
+    shares_short  = safe(info.get("sharesShort"))
+    shares_float  = safe(info.get("floatShares"))
+    short_ratio   = safe(info.get("shortRatio"))
+    inst_own      = safe(info.get("heldPercentInstitutions"))
+    target_mean   = safe(info.get("targetMeanPrice"))
+    target_high   = safe(info.get("targetHighPrice"))
+    target_low    = safe(info.get("targetLowPrice"))
+    analyst_count = safe(info.get("numberOfAnalystOpinions"))
+    eps_fwd       = safe(info.get("epsForward"))
+    eps_curr      = safe(info.get("epsCurrentYear"))
+
+    # Derived
+    ebitda_margin  = round(ebitda / total_rev * 100, 1)      if ebitda and total_rev else None
+    fcf_margin     = round(free_cf / total_rev * 100, 1)     if free_cf and total_rev else None
+    fcf_yield      = round(free_cf / market_cap * 100, 2)    if free_cf and market_cap else None
+    fcf_conversion = round(free_cf / net_income * 100, 1)    if free_cf and net_income and net_income > 0 else None
+    net_debt       = (total_debt - total_cash)                if total_debt and total_cash else None
+    net_debt_ebitda= round(net_debt / ebitda, 2)             if net_debt and ebitda and ebitda > 0 else None
+    pfcf           = round(price_now / (free_cf / shares_out), 2) if free_cf and shares_out and free_cf > 0 else None
+    short_pct      = round(shares_short / shares_float * 100, 2)  if shares_short and shares_float else None
+    accruals_ratio = round((net_income - op_cashflow) / total_assets * 100, 2) if net_income and op_cashflow and total_assets and total_assets > 0 else None
+    upside_pct     = round((target_mean / price_now - 1) * 100, 1) if target_mean else None
+
+    # Analyst recs
+    analyst_recs_str = "N/A"
+    strong_buy = buy_n = hold_n = sell_n = strong_sell = 0
+    try:
+        recs = t.recommendations_summary
+        if recs is not None and not recs.empty:
+            row = recs.iloc[0]
+            strong_buy  = int(row.get("strongBuy",  0))
+            buy_n       = int(row.get("buy",        0))
+            hold_n      = int(row.get("hold",       0))
+            sell_n      = int(row.get("sell",       0))
+            strong_sell = int(row.get("strongSell", 0))
+            analyst_recs_str = f"Strong Buy: {strong_buy}, Buy: {buy_n}, Hold: {hold_n}, Sell: {sell_n}, Strong Sell: {strong_sell}"
+    except Exception:
+        pass
+
+    # Next earnings
+    next_earnings = "N/A"
+    try:
+        dates = t.earnings_dates
+        if dates is not None and not dates.empty:
+            upcoming = dates[dates.index > pd.Timestamp.now(tz="UTC")]
+            if not upcoming.empty:
+                next_earnings = upcoming.index[0].strftime("%Y-%m-%d")
+    except Exception:
+        pass
+
+    def pct(v):  return f"{round(v * 100, 1)}%" if v is not None else "N/A"
     def num(v, d=2): return f"{round(v, d)}" if v is not None else "N/A"
+    def bn(v):   return f"${v / 1e9:.2f}B" if v is not None else "N/A"
+    def pos(v):  return f"+{v}" if v and v > 0 else str(v) if v is not None else "N/A"
 
-    prompt = f"""You are a professional equity research analyst. Analyze the following data for {ticker} ({info.get('longName', ticker)}) and write a concise but thorough investment research report.
+    # ── Determine overall rating from signals ────────────────────────────────
+    bullish = sum([
+        1 if price_now > ma50  else 0,
+        1 if price_now > ma200 else 0,
+        1 if ma50 > ma200      else 0,
+        1 if (rsi_val and 40 < rsi_val < 70) else 0,
+        1 if (macd_val and signal_val and macd_val > signal_val) else 0,
+        1 if (strong_buy + buy_n > hold_n + sell_n + strong_sell) else 0,
+    ])
+    if bullish >= 5:
+        rating_class, rating_text = "badge-green", "BUY"
+    elif bullish >= 3:
+        rating_class, rating_text = "badge-amber", "NEUTRAL"
+    else:
+        rating_class, rating_text = "badge-red",   "SELL"
 
-**Company:** {info.get('longName', ticker)}
-**Sector:** {info.get('sector', 'N/A')} | **Industry:** {info.get('industry', 'N/A')}
-**Market Cap:** {'${:,.0f}B'.format(market_cap / 1e9) if market_cap else 'N/A'}
+    ma_class   = "badge-green" if ma50 > ma200 else "badge-red"
+    ma_label   = "Golden Cross" if ma50 > ma200 else "Death Cross"
+    rsi_class  = "badge-red" if (rsi_val and rsi_val > 70) else "badge-amber" if (rsi_val and rsi_val < 40) else "badge-green"
+    rsi_label  = "Overbought" if (rsi_val and rsi_val > 70) else "Oversold" if (rsi_val and rsi_val < 30) else "Neutral"
+    macd_class = "badge-green" if (macd_val and signal_val and macd_val > signal_val) else "badge-red"
+    macd_label = "Bullish" if (macd_val and signal_val and macd_val > signal_val) else "Bearish"
+    w52_class  = "badge-green" if (pct_52w and pct_52w > 85) else "badge-amber" if (pct_52w and pct_52w > 70) else "badge-red"
 
-**Price & Performance**
-- Current Price: ${round(price_now, 2)}
-- Daily Change: {change}%
-- vs 50-Day MA: {'above' if price_now > ma50 else 'below'} (MA50: ${round(ma50, 2)})
-- vs 200-Day MA: {'above' if price_now > ma200 else 'below'} (MA200: ${round(ma200, 2)})
+    def margin_badge(val, high, low):
+        if val is None: return "badge-amber", "N/A"
+        v = val * 100
+        if v >= high: return "badge-green", f"{v:.1f}%"
+        if v >= low:  return "badge-amber", f"{v:.1f}%"
+        return "badge-red", f"{v:.1f}%"
 
-**Valuation**
-- P/E (Trailing): {num(pe_trailing)}
-- P/E (Forward): {num(pe_forward)}
-- EV/EBITDA: {num(ev_ebitda)}
+    gm_cls,  gm_val  = margin_badge(gross_margin, 40, 20)
+    opm_cls, opm_val = margin_badge(op_margin,    15, 5)
+    npm_cls, npm_val = margin_badge(net_margin,   10, 0)
 
-**Profitability**
-- Gross Margin: {pct(gross_margin)}
-- Operating Margin: {pct(op_margin)}
-- Net Margin: {pct(net_margin)}
-- ROE: {pct(roe)}
-- Revenue Growth (YoY): {pct(rev_growth)}
-- EPS Growth (YoY): {pct(eps_growth)}
+    report_date = pd.Timestamp.now().strftime("%B %d, %Y")
 
-**Balance Sheet**
-- Debt/Equity: {num(debt_eq)}
-- Free Cash Flow: {'${:.2f}B'.format(free_cf / 1e9) if free_cf else 'N/A'}
+    # ── Python-generated header HTML (always accurate, no AI) ────────────────
+    header_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{ticker} — Equity Research</title>
+<style>{REPORT_CSS}</style>
+</head>
+<body>
 
-**Technical Indicators**
-- RSI (14): {num(rsi_val)} ({'Overbought' if rsi_val and rsi_val > 70 else 'Oversold' if rsi_val and rsi_val < 30 else 'Neutral'})
-- MACD: {num(macd_val)} | Signal: {num(signal_val)} ({'Bullish crossover' if macd_val and signal_val and macd_val > signal_val else 'Bearish crossover'})
-- VWAP: {'${:.2f} (price is {} VWAP)'.format(vwap_val, 'above' if price_now > vwap_val else 'below') if vwap_val else 'N/A'}
-- Volume: {'{:.1f}M'.format(vol_today / 1e6)} ({f'{vol_ratio}x avg' if vol_ratio else 'N/A'})
+<h1>{info.get('longName', ticker)}</h1>
+<p class="meta">{ticker} &nbsp;|&nbsp; {info.get('sector','N/A')} — {info.get('industry','N/A')} &nbsp;|&nbsp; {report_date}</p>
 
-Write a structured report with these sections:
-1. **Executive Summary** (2-3 sentences with overall take)
-2. **Business Overview** (brief company description)
-3. **Valuation Analysis** (assess if cheap/fair/expensive vs sector/history)
-4. **Profitability & Growth** (quality of earnings and growth trajectory)
-5. **Technical Picture** (momentum, trend, key levels)
-6. **Key Risks** (bullet list of 3-4 main risks)
-7. **Investment Conclusion** (Bullish / Neutral / Bearish with reasoning)
+<div class="badges">
+  <span class="badge {rating_class}">{rating_text}</span>
+  <span class="badge badge-blue">Next earnings: {next_earnings}</span>
+  <span class="badge {ma_class}">{ma_label}</span>
+</div>
 
-Be direct and opinionated. Use markdown formatting. Keep total length to ~500 words."""
+<div class="card-grid">
+  <div class="card"><div class="card-label">Current price</div><div class="card-value">${round(price_now, 2)}</div><div class="card-sub">{'Daily change: ' + pos(round((price_now/float(info.get("previousClose",price_now))-1)*100,2)) + '%' if info.get('previousClose') else ''}</div></div>
+  <div class="card"><div class="card-label">1-year return</div><div class="card-value">{pos(yr_return)}%</div><div class="card-sub">vs S&P 500 RS 6M: {pos(rs_6m)}%</div></div>
+  <div class="card"><div class="card-label">Market cap</div><div class="card-value">{bn(market_cap)}</div><div class="card-sub">Revenue TTM: {bn(total_rev)}</div></div>
+  <div class="card"><div class="card-label">P/E (forward)</div><div class="card-value">{num(pe_forward)}</div><div class="card-sub">Trailing P/E: {num(pe_trailing)}</div></div>
+  <div class="card"><div class="card-label">EV / EBITDA</div><div class="card-value">{num(ev_ebitda)}</div><div class="card-sub">EV/Revenue: {num(ev_revenue)}</div></div>
+  <div class="card"><div class="card-label">Free cash flow</div><div class="card-value">{bn(free_cf)}</div><div class="card-sub">FCF yield: {f'{fcf_yield}%' if fcf_yield else 'N/A'}</div></div>
+</div>
 
-    def stream_report():
-        with httpx.stream(
-            "POST",
-            "http://localhost:11434/api/chat",
-            json={
-                "model": "llama3.2",
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": True,
-            },
-            timeout=120,
-        ) as resp:
-            if resp.status_code != 200:
-                yield f"data: {json.dumps({'text': 'Ollama error: ' + str(resp.status_code)})}\n\n"
-                return
-            for line in resp.iter_lines():
-                if not line:
-                    continue
-                try:
-                    chunk = json.loads(line)
-                    text = chunk.get("message", {}).get("content", "")
-                    if text:
-                        yield f"data: {json.dumps({'text': text})}\n\n"
-                    if chunk.get("done"):
-                        break
-                except Exception:
-                    continue
-        yield "data: [DONE]\n\n"
+<div class="section">
+<div class="section-title">Key Metrics at a Glance</div>
+<table>
+  <tr><th>Profitability</th><th>Value</th><th>Signal</th><th>Balance Sheet</th><th>Value</th></tr>
+  <tr><td>Gross Margin</td><td>{gm_val}</td><td><span class="badge {gm_cls}">{'Above' if gross_margin and gross_margin*100>=40 else 'Below'} benchmark</span></td><td>Debt / Equity</td><td>{num(debt_eq)}</td></tr>
+  <tr><td>Operating Margin</td><td>{opm_val}</td><td><span class="badge {opm_cls}">{'Above' if op_margin and op_margin*100>=15 else 'Below'} benchmark</span></td><td>Net Debt / EBITDA</td><td>{num(net_debt_ebitda)}</td></tr>
+  <tr><td>Net Margin</td><td>{npm_val}</td><td><span class="badge {npm_cls}">{'Above' if net_margin and net_margin*100>=10 else 'Below'} benchmark</span></td><td>Current Ratio</td><td>{num(current_ratio)}</td></tr>
+  <tr><td>ROE</td><td>{pct(roe)}</td><td><span class="badge {'badge-green' if roe and roe*100>=15 else 'badge-amber'}">{'Strong' if roe and roe*100>=15 else 'Weak'}</span></td><td>Cash</td><td>{bn(total_cash)}</td></tr>
+  <tr><td>Revenue Growth (YoY)</td><td>{pct(rev_growth)}</td><td><span class="badge {'badge-green' if rev_growth and rev_growth*100>=10 else 'badge-red'}">{'Growing' if rev_growth and rev_growth>0 else 'Declining'}</span></td><td>Total Debt</td><td>{bn(total_debt)}</td></tr>
+  <tr><td>EPS Growth (YoY)</td><td>{pct(eps_growth)}</td><td><span class="badge {'badge-green' if eps_growth and eps_growth*100>=10 else 'badge-amber'}">{'Growing' if eps_growth and eps_growth>0 else 'Declining'}</span></td><td>FCF Conversion</td><td>{f'{fcf_conversion}%' if fcf_conversion else 'N/A'}</td></tr>
+  <tr><td>Accruals Ratio</td><td>{f'{accruals_ratio}%' if accruals_ratio is not None else 'N/A'}</td><td><span class="badge {'badge-green' if accruals_ratio is not None and accruals_ratio < 0 else 'badge-red'}">{'Quality signal' if accruals_ratio is not None and accruals_ratio < 0 else 'Watch'}</span></td><td>Inst. Ownership</td><td>{f'{round(inst_own*100,1)}%' if inst_own else 'N/A'}</td></tr>
+</table>
+</div>
 
-    return StreamingResponse(stream_report(), media_type="text/event-stream")
+<div class="section">
+<div class="section-title">Technical Snapshot</div>
+<table>
+  <tr><th>Indicator</th><th>Value</th><th>Signal</th><th>Level</th><th>Price vs</th></tr>
+  <tr><td>RSI (14-day)</td><td>{num(rsi_val)}</td><td><span class="badge {rsi_class}">{rsi_label}</span></td><td>50-Day MA</td><td>${round(ma50,2)} — <span class="badge {'badge-green' if price_now>ma50 else 'badge-red'}">{'Above' if price_now>ma50 else 'Below'}</span></td></tr>
+  <tr><td>MACD</td><td>{num(macd_val)}</td><td><span class="badge {macd_class}">{macd_label} crossover</span></td><td>100-Day MA</td><td>${round(ma100,2)} — <span class="badge {'badge-green' if price_now>ma100 else 'badge-red'}">{'Above' if price_now>ma100 else 'Below'}</span></td></tr>
+  <tr><td>52W High proximity</td><td>{f'{pct_52w}%' if pct_52w else 'N/A'}</td><td><span class="badge {w52_class}">{'Positive >85%' if pct_52w and pct_52w>85 else 'Neutral 70-85%' if pct_52w and pct_52w>70 else 'Negative <70%'}</span></td><td>200-Day MA</td><td>${round(ma200,2)} — <span class="badge {'badge-green' if price_now>ma200 else 'badge-red'}">{'Above' if price_now>ma200 else 'Below'}</span></td></tr>
+  <tr><td>Volume vs 20D avg</td><td>{f'{vol_ratio}x' if vol_ratio else 'N/A'}</td><td><span class="badge {'badge-green' if vol_ratio and vol_ratio>1.5 else 'badge-amber' if vol_ratio and vol_ratio>0.8 else 'badge-red'}">{'High' if vol_ratio and vol_ratio>1.5 else 'Normal' if vol_ratio and vol_ratio>0.8 else 'Low'}</span></td><td>52W High / Low</td><td>${round(week52_high,2)} / ${round(week52_low,2)}</td></tr>
+  <tr><td>RS vs S&P (3M / 6M)</td><td>{pos(rs_3m)}% / {pos(rs_6m)}%</td><td><span class="badge {'badge-green' if rs_6m and rs_6m>0 else 'badge-red'}">{'Outperforming' if rs_6m and rs_6m>0 else 'Underperforming'}</span></td><td>MA Structure</td><td><span class="badge {ma_class}">{ma_label}</span></td></tr>
+</table>
+</div>
+
+<div class="section">
+<div class="section-title">Valuation Multiples</div>
+<table>
+  <tr><th>Multiple</th><th>Current</th><th>5-Year Avg (est.)</th><th>Sector Median (est.)</th><th>Assessment</th></tr>
+  <tr><td>P/E (Forward)</td><td>{num(pe_forward)}</td><td>—</td><td>—</td><td></td></tr>
+  <tr><td>EV/EBITDA</td><td>{num(ev_ebitda)}</td><td>—</td><td>—</td><td></td></tr>
+  <tr><td>EV/Sales</td><td>{num(ev_revenue)}</td><td>—</td><td>—</td><td></td></tr>
+  <tr><td>P/FCF</td><td>{num(pfcf)}</td><td>—</td><td>—</td><td></td></tr>
+  <tr><td>PEG Ratio</td><td>{num(peg_ratio)}</td><td>—</td><td>—</td><td></td></tr>
+</table>
+<p style="font-size:12px;color:#9ca3af;margin-top:4px;">Analyst targets — Mean: ${num(target_mean)} ({pos(upside_pct)}% upside) &nbsp;|&nbsp; High: ${num(target_high)} &nbsp;|&nbsp; Low: ${num(target_low)} &nbsp;|&nbsp; {analyst_count or 'N/A'} analysts &nbsp;|&nbsp; {analyst_recs_str}</p>
+</div>
+
+"""
+
+    # ── Ollama prompt: generate analysis sections as HTML ────────────────────
+    prompt = f"""You are an institutional equity research analyst. Write a hedge-fund-style equity research report on {ticker} ({info.get('longName', ticker)}) in HTML format.
+
+LIVE DATA (use these exact numbers — do not invent different figures):
+Price: ${round(price_now,2)} | Market Cap: {bn(market_cap)} | Sector: {info.get('sector','N/A')} | Industry: {info.get('industry','N/A')}
+Revenue TTM: {bn(total_rev)} | EBITDA: {bn(ebitda)} | Net Income: {bn(net_income)} | FCF: {bn(free_cf)}
+Revenue Growth: {pct(rev_growth)} | EPS Growth: {pct(eps_growth)} | ROE: {pct(roe)} | ROA: {pct(roa)}
+Gross Margin: {pct(gross_margin)} | Op Margin: {pct(op_margin)} | Net Margin: {pct(net_margin)}
+P/E Fwd: {num(pe_forward)} | EV/EBITDA: {num(ev_ebitda)} | EV/Rev: {num(ev_revenue)} | PEG: {num(peg_ratio)} | P/FCF: {num(pfcf)}
+Debt/Equity: {num(debt_eq)} | Net Debt/EBITDA: {num(net_debt_ebitda)} | Current Ratio: {num(current_ratio)}
+FCF Conversion: {f'{fcf_conversion}%' if fcf_conversion else 'N/A'} | Accruals Ratio: {f'{accruals_ratio}%' if accruals_ratio is not None else 'N/A'}
+RSI: {num(rsi_val)} | MACD: {macd_label} | MA Structure: {ma_label} | 52W High proximity: {f'{pct_52w}%' if pct_52w else 'N/A'}
+Short Interest: {f'{short_pct}%' if short_pct else 'N/A'} | DTC: {num(short_ratio)} | Inst. Ownership: {f'{round(inst_own*100,1)}%' if inst_own else 'N/A'}
+Analyst consensus: {analyst_recs_str} | Price target mean: ${num(target_mean)} ({pos(upside_pct)}% upside)
+Next earnings: {next_earnings} | EPS current year: {num(eps_curr)} | EPS forward: {num(eps_fwd)}
+Beta: {num(beta)} | Total Debt: {bn(total_debt)} | Cash: {bn(total_cash)} | Shares: {f'{shares_out/1e9:.2f}B' if shares_out else 'N/A'}
+
+AVAILABLE CSS CLASSES (use these exactly as shown):
+- Sections: <div class="section"><div class="section-title">Title</div>...</div>
+- Subsections: <div class="sub-title">SUBTITLE</div>
+- White cards: <div class="raised"><strong>Title</strong><p>...</p></div>
+- Two columns: <div class="row"><div class="raised">...</div><div class="raised">...</div></div>
+- Badges (inline): <span class="badge badge-green">text</span> or badge-amber or badge-red or badge-blue
+- Verdict boxes: <div class="verdict v-green"><strong>Title</strong><p>...</p></div> (or v-amber, v-red)
+- Warning box: <div class="flag"><strong>⚠ Warning</strong><p>...</p></div>
+- Risk items: <div class="risk-item risk-high"><strong>Risk</strong><p>...</p></div> (or risk-med, risk-low)
+- Opportunity: <div class="opt"><strong>Opportunity</strong><p>...</p></div>
+- Final box: <div class="final"><h2>RATING</h2><p>Conviction: X/10</p><p><em>One-liner thesis</em></p></div>
+- Monitoring list: <ul class="check"><li>metric — threshold</li></ul>
+- Tables: standard <table><tr><th>/<td> with badge spans inside cells
+
+Write ONLY HTML body content (no <html>, <head>, <style>, or <body> tags).
+Be direct and opinionated. Use the badge classes to colour-code every verdict.
+Follow this exact structure:
+
+Part 0 — Macro Regime (growth/rate/risk-appetite verdicts with badge colours)
+Part 1 — Business & Fundamentals (business model, profitability score /10, ROIC/WACC estimate, cash flow quality, quality acceleration verdict)
+Part 2 — Competitive Moat (table with moat sources + evidence, moat rating badge, widening/narrowing verdict)
+Part 2B — Stewardship & Management (capital allocation, governance, track record)
+Part 3 — Earnings Quality & Estimates (beat/miss history, estimate revision trend, guidance style)
+Part 4B — Asymmetry Check (downside floor, upside ceiling, asymmetry ratio, free optionality)
+Part 5 — Institutional Flow (commentary on short interest DTC, institutional %, insider activity)
+Part 6 — Technical Analysis (trend table, 52W high signal, key support/resistance, chart pattern)
+Part 7 — Trade Plan (entry zone, stop-loss, target 1, target 2, risk:reward ratio — all in specific $ figures)
+Part 8 — Catalysts & Roadmap (near/medium/long term, strategic partnerships)
+Part 8B — Market Narrative (current narrative, implied assumptions at current price)
+Part 8C — Risks & Monitoring (3 ranked risks as risk-item divs, thesis breakers, monitoring checklist as ul.check)
+Part 9 — Conviction Scorecard (HTML table with all 11 factors scored, weighted total, final verdict box)
+Bull/Base/Bear scenario table"""
+
+    # Call Ollama (non-streaming — waits for complete response)
+    try:
+        with httpx.Client(timeout=300) as client:
+            resp = client.post(
+                "http://localhost:11434/api/chat",
+                json={"model": "llama3.2", "messages": [{"role": "user", "content": prompt}], "stream": False},
+            )
+            analysis_html = resp.json().get("message", {}).get("content", "<p>Generation failed.</p>")
+    except Exception as e:
+        analysis_html = f"<p style='color:red'>Ollama error: {e}</p>"
+
+    footer_html = """
+<p style="font-size:11px; color:#9ca3af; margin-top:24px; padding-top:12px; border-top:1px solid #e5e7eb;">
+This report is for educational and informational purposes only and does not constitute investment advice.
+Data sourced from yfinance. AI analysis generated by a local model — verify all figures independently. DYOR.
+</p>
+</body></html>"""
+
+    complete_html = header_html + analysis_html + footer_html
+    return {"html": complete_html}
 
 
 @app.get("/api/stock/{ticker}/news")
@@ -672,7 +896,8 @@ async def ollama_stream_async(prompt: str):
     except asyncio.CancelledError:
         return  # browser disconnected — Ollama connection freed immediately
     except (httpx.TimeoutException, httpx.RemoteProtocolError):
-        yield f"data: {json.dumps({'text': '\n\n[Generation timed out]'})}\n\n"
+        _timeout_msg = "\n\n[Generation timed out]"
+        yield f"data: {json.dumps({'text': _timeout_msg})}\n\n"
     yield "data: [DONE]\n\n"
 
 
