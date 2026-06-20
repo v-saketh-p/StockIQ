@@ -404,12 +404,33 @@ def get_stock_report(ticker: str):
     vol_avg20 = float(hist["Volume"].rolling(20).mean().iloc[-1])
     vol_ratio = round(vol_today / vol_avg20, 2) if vol_avg20 else None
 
-    # Relative strength vs SPY
+    # Relative strength vs SPY — use actual dates, not iloc offsets
     rs_3m = rs_6m = None
     try:
-        spy = yf.Ticker("SPY").history(period="1y")["Close"].dropna()
-        rs_3m = round((price_now / float(close.iloc[-63]) - 1) * 100 - (float(spy.iloc[-1]) / float(spy.iloc[-63]) - 1) * 100, 1)
-        rs_6m = round((price_now / float(close.iloc[-126]) - 1) * 100 - (float(spy.iloc[-1]) / float(spy.iloc[-126]) - 1) * 100, 1)
+        spy_hist = yf.Ticker("SPY").history(period="1y")["Close"].dropna()
+
+        # Strip timezones for simple comparison
+        def strip_tz(s):
+            return s.copy().set_axis(s.index.tz_localize(None) if s.index.tz is None else s.index.tz_convert(None))
+
+        c   = strip_tz(close)
+        spy = strip_tz(spy_hist)
+        now_ts   = pd.Timestamp.now()
+        ago_3m   = now_ts - pd.DateOffset(months=3)
+        ago_6m   = now_ts - pd.DateOffset(months=6)
+
+        def price_at(series, target):
+            sub = series[series.index >= target]
+            return float(sub.iloc[0]) if not sub.empty else None
+
+        c_3m   = price_at(c,   ago_3m);  c_6m   = price_at(c,   ago_6m)
+        spy_3m = price_at(spy, ago_3m);  spy_6m = price_at(spy, ago_6m)
+        spy_now = float(spy.iloc[-1])
+
+        if c_3m and spy_3m:
+            rs_3m = round((price_now / c_3m - 1) * 100 - (spy_now / spy_3m - 1) * 100, 1)
+        if c_6m and spy_6m:
+            rs_6m = round((price_now / c_6m - 1) * 100 - (spy_now / spy_6m - 1) * 100, 1)
     except Exception:
         pass
 
@@ -643,7 +664,15 @@ Part 2 — Competitive Moat (table with moat sources + evidence, moat rating bad
 Part 2B — Stewardship & Management (capital allocation, governance, track record)
 Part 3 — Earnings Quality & Estimates (beat/miss history, estimate revision trend, guidance style)
 Part 4B — Asymmetry Check (downside floor, upside ceiling, asymmetry ratio, free optionality)
-Part 5 — Institutional Flow (commentary on short interest DTC, institutional %, insider activity)
+Part 5 — Institutional Flow
+  REQUIRED: Open with a .card-grid containing exactly these four cards using the numbers from LIVE DATA:
+    Card 1 — "Analyst consensus" showing the buy/hold/sell breakdown and total analysts
+    Card 2 — "Avg price target" showing the mean target vs current price (above/below)
+    Card 3 — "Short interest" showing short % of float and DTC (days to cover)
+    Card 4 — "Institutional ownership" showing the % held by institutions
+  Then a .raised block: identify {ticker}'s single closest publicly-traded competitor (by business model, not just sector). Write a balanced 2–3 paragraph comparison covering: leverage/debt structure, valuation multiple, business model differentiation, and which is the better risk-adjusted choice right now with a reason. Use badge colours for verdicts.
+  Then comment on any notable strategic investors, major recent index inclusions, or insider activity worth flagging.
+  Close with one verdict box on overall institutional sentiment.
 Part 6 — Technical Analysis (trend table, 52W high signal, key support/resistance, chart pattern)
 Part 7 — Trade Plan (entry zone, stop-loss, target 1, target 2, risk:reward ratio — all in specific $ figures)
 Part 8 — Catalysts & Roadmap (near/medium/long term, strategic partnerships)
