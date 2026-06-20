@@ -1,11 +1,36 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Sparkles, RefreshCw, RotateCcw } from "lucide-react";
+import { useTheme } from "./ThemeProvider";
 
 interface Props { ticker: string; autoTrigger?: boolean }
 
+const DARK_CSS = `<style id="theme-override">
+:root {
+  --r-bg:         #0d0d16;
+  --r-surface:    #13131e;
+  --r-raised:     #1a1a28;
+  --r-border:     #20202e;
+  --r-border-sub: #2a2a3e;
+  --r-text:       #eaeaf4;
+  --r-muted:      #8888a8;
+  --r-sub:        #60607a;
+  --r-green-bg:   rgba(22,163,74,0.15);  --r-green-fg: #4ade80; --r-green-br: rgba(22,163,74,0.35);
+  --r-amber-bg:   rgba(217,119,6,0.15);  --r-amber-fg: #fbbf24; --r-amber-br: rgba(217,119,6,0.35);
+  --r-red-bg:     rgba(220,38,38,0.15);  --r-red-fg:   #f87171; --r-red-br:   rgba(220,38,38,0.35);
+  --r-blue-bg:    rgba(37,99,235,0.15);  --r-blue-fg:  #60a5fa; --r-blue-br:  rgba(37,99,235,0.35);
+  --r-vg-bg:      rgba(22,163,74,0.1);
+  --r-va-bg:      rgba(217,119,6,0.1);
+  --r-vr-bg:      rgba(220,38,38,0.1);
+  --r-flag-bg:    rgba(217,119,6,0.1);
+  --r-final-bg:   rgba(217,119,6,0.08); --r-final-br: rgba(217,119,6,0.4);
+  --r-opt-bg:     rgba(22,163,74,0.1);  --r-opt-br:   rgba(22,163,74,0.3);
+}
+</style>`;
+
 export default function AIReport({ ticker, autoTrigger }: Props) {
+  const { theme }                  = useTheme();
   const [html,      setHtml]      = useState("");
   const [loading,   setLoading]   = useState(false);
   const [error,     setError]     = useState<string | null>(null);
@@ -13,6 +38,19 @@ export default function AIReport({ ticker, autoTrigger }: Props) {
   const abortRef        = useRef<AbortController | null>(null);
   const didAutoGenerate = useRef(false);
   const iframeRef       = useRef<HTMLIFrameElement>(null);
+
+  // Inject or remove the dark-mode override whenever theme changes
+  const themedHtml = useMemo(() => {
+    if (!html) return html;
+    const hasDark = html.includes('id="theme-override"');
+    if (theme === "dark" && !hasDark) {
+      return html.replace("</head>", DARK_CSS + "</head>");
+    }
+    if (theme === "light" && hasDark) {
+      return html.replace(DARK_CSS, "");
+    }
+    return html;
+  }, [html, theme]);
 
   useEffect(() => {
     didAutoGenerate.current = false;
@@ -200,10 +238,10 @@ export default function AIReport({ ticker, autoTrigger }: Props) {
         )}
 
         {/* HTML report rendered in sandboxed iframe */}
-        {html && !loading && (
+        {themedHtml && !loading && (
           <iframe
             ref={iframeRef}
-            srcDoc={html}
+            srcDoc={themedHtml}
             title={`${ticker} AI Research Report`}
             sandbox="allow-same-origin"
             style={{
