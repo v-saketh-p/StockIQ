@@ -699,41 +699,89 @@ Output ONLY HTML body content — no <html>, <head>, <style>, or <body> tags.
 Be specific, opinionated, and direct. Colour-code every verdict with badges.
 Write 4–5 substantive sentences per sub-section minimum — no one-liners.
 
-STRUCTURE (follow exactly, 6 sections):
+STRUCTURE — follow every part exactly, minimum 4 substantive sentences per sub-section:
 
-Section 1 — Business & Competitive Position
-  - What this company actually does and how it makes money (2-3 sentences, specific)
-  - Profitability quality: score /10 with reasoning using the margin and return figures from LIVE DATA
-  - Competitive moat: table with columns [Moat source | Evidence | Strength] — 4-5 rows, use your knowledge of {ticker}'s business
-  - Capital allocation & management track record
-  - One verdict box: overall fundamental quality score
+Part 0 — Macro Regime
+  - Two .raised boxes side by side in a .row: left = "Why the macro fits {ticker}" (growth/rates/risk appetite), right = "Macro risks specific to {ticker}"
+  - Each box ends with a badge verdict (badge-green / badge-amber / badge-red)
+  - Be specific to {ticker}'s sector, not generic macro commentary
 
-Section 2 — Earnings Quality & Valuation
-  - Earnings quality: are the margins sustainable? Is FCF conversion healthy or distorted?
-  - Valuation: is {ticker} cheap, fair, or expensive vs its own history and sector peers? Reference the P/E, EV/EBITDA, P/FCF, PEG from LIVE DATA
-  - Asymmetry: what is the realistic downside floor vs upside ceiling at current price?
-  - Bull/base/bear scenario table with 12-month price targets and key assumptions
+Part 1 — Business & Fundamentals
+  - 2-3 sentences on exactly what {ticker} does and how it earns money — specific, not generic
+  - .sub-title "Profitability — Score: X/10": table with columns [Metric | Value (from LIVE DATA) | Healthy Range | Status badge] — include gross margin, op margin, net margin, ROE, revenue growth, EPS growth, FCF conversion
+  - .sub-title "Capital Efficiency": .raised box discussing ROIC vs WACC estimate, cash flow quality, accruals ratio signal
+  - .sub-title "Quality Acceleration": is the business getting better or worse quarter over quarter? Reference margin trends from LIVE DATA
+  - Close with verdict v-green/v-amber/v-red: overall fundamental quality score /10
 
-Section 3 — Institutional Flow & Competitive Landscape
-  - Open with a card-grid of exactly 4 cards: analyst consensus (buy/hold/sell count), avg price target vs current price, short interest % + DTC, institutional ownership %
-  - Identify {ticker}'s single closest publicly-traded competitor. Write 2-3 paragraphs comparing: leverage, valuation multiples, business model, and which is the better risk-adjusted buy today
-  - Notable strategic investors, index inclusions, or insider activity
-  - Verdict box: overall institutional sentiment
+Part 2 — Competitive Moat
+  - Table with columns [Moat source | Evidence | Strength badge] — 5 rows minimum, use your knowledge of {ticker}
+  - .raised box: moat trajectory — is it widening or narrowing? Be specific about competitive threats
+  - Close with verdict: moat rating badge + widening/narrowing assessment
 
-Section 4 — Technical Setup & Trade Plan
-  - Trend analysis: MA structure, RSI signal, MACD signal, volume — reference exact numbers from LIVE DATA
-  - Key support levels (use MA50/MA200 from LIVE DATA as anchors) and resistance (52W high from LIVE DATA)
-  - Specific trade plan: entry zone in $, stop-loss in $, Target 1 in $, Target 2 in $, risk:reward ratio
+Part 2B — Stewardship & Management
+  - .raised box on CEO/leadership: background, track record, key decisions
+  - .raised box on capital allocation: buybacks, dividends, M&A, debt management — reference actual cash/debt figures from LIVE DATA
+  - Governance note: share structure, any red flags
+  - Close with badge verdict on management quality
 
-Section 5 — Catalysts, Risks & Monitoring
-  - 3 near/medium/long-term catalysts as opt divs
-  - 3 ranked risks as risk-item divs (risk-high / risk-med / risk-low) — be specific about what breaks the thesis
-  - Monitoring checklist as ul.check — 5-6 specific metrics with thresholds to watch
+Part 3 — Earnings Quality & Estimates
+  - Table with recent quarters if known, otherwise focus on estimate revision trend (use analyst data from LIVE DATA)
+  - Are earnings driven by real operating leverage or one-time items?
+  - Guidance style: conservative/aggressive? Do they beat or miss?
+  - Close with badge: estimate revision trend (UP/DOWN/FLAT)
 
-Section 6 — Conviction Scorecard & Final Verdict
-  - HTML table: 8 factors (Fundamentals, Valuation, Moat, Earnings Quality, Technical, Institutional Flow, Risk/Reward, Macro) each scored /10 with a one-line rationale
-  - Weighted total score /10
-  - Final verdict box (.final) with rating, conviction score, and one-liner investment thesis"""
+Part 4 — Valuation
+  - Table with columns [Multiple | Current (from LIVE DATA) | 5Y avg est. | Sector median est. | Assessment badge] — P/E fwd, EV/EBITDA, EV/Rev, P/FCF, PEG
+  - Is {ticker} cheap, fair, or expensive? Be opinionated and reference the specific multiples
+  - Analyst target context: mean target ${num(target_mean)}, current price ${round(price_now,2)} — what does the gap imply?
+  - Close with verdict: valuation assessment
+
+Part 4B — Asymmetry Check
+  - .row with two .raised boxes: left = downside floor (what's the bear case price and why), right = upside ceiling (bull case price and catalyst)
+  - Asymmetry ratio: is the risk:reward better than 2:1?
+  - .opt box for any free optionality (hidden assets, spin-offs, new markets)
+  - Close with verdict: asymmetry rating
+
+Part 5 — Institutional Flow & Competitive Landscape
+  - Open with .card-grid of exactly 4 cards using numbers from LIVE DATA:
+      Card 1 "Analyst consensus" — buy/hold/sell count + total analysts
+      Card 2 "Avg price target" — mean target vs current, above/below badge
+      Card 3 "Short interest" — short % of float + DTC
+      Card 4 "Institutional ownership" — % held by institutions
+  - .raised block: identify {ticker}'s single closest publicly-traded competitor. 3 paragraphs: (1) business model comparison, (2) financial comparison (leverage, margins, valuation using LIVE DATA for {ticker}'s side), (3) which is the better risk-adjusted choice today and why
+  - Comment on notable strategic investors, recent index inclusions, insider activity
+  - Close with verdict box: overall institutional sentiment
+
+Part 6 — Technical Analysis
+  - Table [Timeframe | Trend | Evidence badge] — daily/weekly/monthly
+  - Key levels: support at MA50 (${round(ma50,2)}) and MA200 (${round(ma200,2)}), resistance at 52W high (${round(week52_high,2)}) — reference these exact numbers
+  - RSI ({num(rsi_val)}), MACD ({macd_label}), MA structure ({ma_label}) interpretation — specific not generic
+  - Chart pattern if identifiable
+  - Close with badge: technical setup rating
+
+Part 7 — Trade Plan
+  - .raised box with border: entry zone in $ (specific range), stop-loss in $ (specific), Target 1 in $, Target 2 in $, risk:reward ratio
+  - Use MA levels and 52W data from LIVE DATA to anchor the levels
+  - Position sizing commentary: how much conviction warrants in a portfolio context?
+
+Part 8 — Catalysts & Roadmap
+  - Three .opt boxes: near-term catalyst (0-3 months), medium-term (3-12 months), long-term (12months+)
+  - Each catalyst must be specific to {ticker}, not generic "earnings beat"
+
+Part 8B — Market Narrative
+  - What is the dominant market narrative about {ticker} right now?
+  - What assumptions are implied at the current price of ${round(price_now,2)}?
+  - Where could the narrative shift, and in which direction?
+
+Part 8C — Risks & Monitoring
+  - Three .risk-item divs ranked risk-high / risk-med / risk-low — specific thesis breakers, not generic risks
+  - ul.check monitoring checklist: 6 specific metrics with exact thresholds (e.g. "Gross margin below 45% for 2 consecutive quarters")
+
+Part 9 — Conviction Scorecard & Final Verdict
+  - Table: 10 factors (Macro Alignment, Fundamental Quality, Competitive Moat, Stewardship, Earnings Quality, Valuation, Asymmetry, Institutional Flow, Technical Setup, Risk/Reward) — each with Score /10, Weight %, Weighted score, one-line rationale
+  - Total weighted score /10
+  - Bull/Base/Bear scenario table: [Scenario | Probability | 12M target | Key assumption]
+  - .final box: rating (BUY/HOLD/SELL/SPECULATIVE BUY), conviction /10, one-liner thesis in italics"""
 
     footer_html = """
 <p style="font-size:11px; color:var(--r-sub); margin-top:24px; padding-top:12px; border-top:1px solid var(--r-border);">
@@ -765,7 +813,7 @@ Data sourced from yfinance. AI analysis generated by Groq / llama-3.3-70b — ve
                         ],
                         "stream": True,
                         "temperature": 0.25,
-                        "max_tokens": 8192,
+                        "max_tokens": 16000,
                     },
                     timeout=120,
                 ) as resp:
