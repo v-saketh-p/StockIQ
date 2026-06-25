@@ -81,20 +81,45 @@ def get_stock(ticker: str):
     # Gross margin is meaningless (returns 0.0) for banks/financials — treat as N/A
     gross_margin_raw = safe(info.get("grossMargins"))
     gross_margin  = gross_margin_raw if (gross_margin_raw and gross_margin_raw > 0.001) else None
-    op_margin     = safe(info.get("operatingMargins"))
+
+    # Compute TTM operating margin from last 4 quarters (more accurate than info field which can be single-quarter)
+    op_margin = None
+    try:
+        inc_q = t.quarterly_income_stmt
+        if "Total Revenue" in inc_q.index and "Operating Income" in inc_q.index:
+            rev_ttm = float(inc_q.loc["Total Revenue"].iloc[:4].dropna().sum())
+            op_ttm  = float(inc_q.loc["Operating Income"].iloc[:4].dropna().sum())
+            if rev_ttm > 0:
+                op_margin = op_ttm / rev_ttm
+    except Exception:
+        pass
+    if op_margin is None:
+        op_margin = safe(info.get("operatingMargins"))
+
     net_margin    = safe(info.get("profitMargins"))
     rev_growth    = safe(info.get("revenueGrowth"))
     eps_growth    = safe(info.get("earningsGrowth"))
-    # info.freeCashflow is stale for many tickers; pull directly from the cash flow statement
+
+    # Compute TTM FCF by summing last 4 quarters (annual cashflow misses the most recent quarter)
     free_cf = None
     try:
-        cf_stmt = t.cashflow
-        if "Free Cash Flow" in cf_stmt.index:
-            _v = cf_stmt.loc["Free Cash Flow"].iloc[0]
-            if not pd.isna(_v):
-                free_cf = float(_v)
+        cf_q = t.quarterly_cashflow
+        if "Free Cash Flow" in cf_q.index:
+            last4 = cf_q.loc["Free Cash Flow"].iloc[:4].dropna()
+            if len(last4) >= 3:
+                free_cf = float(last4.sum())
     except Exception:
-        free_cf = safe(info.get("freeCashflow"))
+        pass
+    if free_cf is None:
+        try:
+            cf_stmt = t.cashflow
+            if "Free Cash Flow" in cf_stmt.index:
+                _v = cf_stmt.loc["Free Cash Flow"].iloc[0]
+                if not pd.isna(_v):
+                    free_cf = float(_v)
+        except Exception:
+            free_cf = safe(info.get("freeCashflow"))
+
     debt_eq       = safe(info.get("debtToEquity"))
     total_cash    = safe(info.get("totalCash"))
     total_debt    = safe(info.get("totalDebt"))
@@ -333,11 +358,32 @@ def get_stock_report(ticker: str):
 
     roe          = safe(info.get("returnOnEquity"))
     gross_margin = safe(info.get("grossMargins"))
-    op_margin    = safe(info.get("operatingMargins"))
+    op_margin = None
+    try:
+        inc_q = t.quarterly_income_stmt
+        if "Total Revenue" in inc_q.index and "Operating Income" in inc_q.index:
+            rev_ttm = float(inc_q.loc["Total Revenue"].iloc[:4].dropna().sum())
+            op_ttm  = float(inc_q.loc["Operating Income"].iloc[:4].dropna().sum())
+            if rev_ttm > 0:
+                op_margin = op_ttm / rev_ttm
+    except Exception:
+        pass
+    if op_margin is None:
+        op_margin = safe(info.get("operatingMargins"))
     net_margin   = safe(info.get("profitMargins"))
     rev_growth   = safe(info.get("revenueGrowth"))
     eps_growth   = safe(info.get("earningsGrowth"))
-    free_cf      = safe(info.get("freeCashflow"))
+    free_cf = None
+    try:
+        cf_q = t.quarterly_cashflow
+        if "Free Cash Flow" in cf_q.index:
+            last4 = cf_q.loc["Free Cash Flow"].iloc[:4].dropna()
+            if len(last4) >= 3:
+                free_cf = float(last4.sum())
+    except Exception:
+        pass
+    if free_cf is None:
+        free_cf = safe(info.get("freeCashflow"))
     debt_eq      = safe(info.get("debtToEquity"))
     pe_trailing  = safe(info.get("trailingPE"))
     pe_forward   = safe(info.get("forwardPE"))
@@ -1089,3 +1135,418 @@ Be direct, opinionated, and specific with numbers throughout. Use markdown forma
 
     prompt = await asyncio.to_thread(_build)
     return StreamingResponse(ollama_stream_async(prompt), media_type="text/event-stream")
+
+
+# ── Peer universe by yfinance industry name ────────────────────────────────────
+PEER_UNIVERSE: dict[str, list[str]] = {
+    "Semiconductors":                         ["NVDA","AMD","INTC","QCOM","AVGO","MRVL","MU","TXN","LRCX","AMAT"],
+    "Software—Application":                   ["MSFT","ORCL","ADBE","CRM","INTU","WDAY","NOW","HUBS"],
+    "Software—Infrastructure":                ["MSFT","ORCL","IBM","PANW","CRWD","ZS","FTNT","NET"],
+    "Internet Content & Information":         ["GOOGL","META","SNAP","PINS","IAC","RDDT"],
+    "Consumer Electronics":                   ["AAPL","MSFT","DELL","HPQ","SONY"],
+    "Electronic Gaming & Multimedia":         ["EA","TTWO","RBLX","NTDOY","SONY"],
+    "Banks—Diversified":                      ["JPM","BAC","WFC","C","USB","PNC","TFC"],
+    "Banks—Regional":                         ["USB","PNC","RF","CFG","KEY","FITB","HBAN"],
+    "Insurance—Diversified":                  ["BRK-B","MET","PRU","AIG","ALL","TRV"],
+    "Insurance—Life":                         ["MET","PRU","LNC","SFG","GL"],
+    "Drug Manufacturers—General":             ["JNJ","PFE","MRK","ABBV","LLY","BMY","AZN"],
+    "Drug Manufacturers—Specialty & Generic": ["AMGN","GILD","REGN","BIIB","VRTX","MRNA"],
+    "Biotechnology":                          ["AMGN","GILD","REGN","BIIB","VRTX","MRNA","SGEN"],
+    "Medical Devices":                        ["MDT","ABT","SYK","BSX","EW","ZBH","ISRG"],
+    "Oil & Gas Integrated":                   ["XOM","CVX","BP","SHEL","TTE","ENB"],
+    "Oil & Gas E&P":                          ["PXD","COP","DVN","EOG","OXY","FANG"],
+    "Specialty Retail":                       ["AMZN","WMT","TGT","COST","HD","LOW","BBY"],
+    "Discount Stores":                        ["WMT","COST","TGT","DG","DLTR"],
+    "Auto Manufacturers":                     ["TSLA","GM","F","STLA","TM","HMC"],
+    "Airlines":                               ["DAL","UAL","AAL","LUV","ALK"],
+    "Telecom Services":                       ["T","VZ","TMUS","CMCSA","CHTR"],
+    "Aerospace & Defense":                    ["LMT","RTX","NOC","GD","BA","LHX"],
+    "Healthcare Plans":                       ["UNH","CVS","HUM","CNC","MOH","ELV"],
+    "REIT—Diversified":                       ["AMT","PLD","CCI","EQIX","SPG","PSA","O"],
+    "Entertainment":                          ["DIS","NFLX","PARA","WBD","CMCSA"],
+    "Restaurants":                            ["MCD","SBUX","YUM","CMG","DPZ","QSR"],
+    "Capital Markets":                        ["GS","MS","JPM","BAC","C","SCHW"],
+    "Asset Management":                       ["BLK","BX","KKR","APO","ARES"],
+    "Utilities—Regulated Electric":           ["NEE","DUK","SO","AEP","EXC","D"],
+    "Integrated Freight & Logistics":         ["UPS","FDX","XPO","GXO","CHRW"],
+    "Travel Services":                        ["BKNG","EXPE","ABNB","TRIP","MMYT"],
+}
+
+
+def _dcf_iv(fcf_ttm: float, growth: float, wacc: float, term_g: float,
+            net_debt: float, shares: float) -> float | None:
+    if wacc <= term_g:
+        return None
+    fcf = fcf_ttm
+    pv_sum = 0.0
+    for yr in range(1, 6):
+        fcf *= (1 + growth)
+        pv_sum += fcf / (1 + wacc) ** yr
+    tv    = fcf * (1 + term_g) / (wacc - term_g)
+    pv_tv = tv / (1 + wacc) ** 5
+    return (pv_sum + pv_tv - net_debt) / shares
+
+
+@app.get("/api/stock/{ticker}/dcf-data")
+def get_dcf_data(ticker: str):
+    ticker = ticker.upper()
+    t = yf.Ticker(ticker)
+    info = t.info
+
+    if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
+        raise HTTPException(status_code=404, detail=f"Ticker '{ticker}' not found")
+
+    price      = float(info.get("currentPrice") or info.get("regularMarketPrice"))
+    beta       = float(safe(info.get("beta")) or 1.0)
+    shares_out = safe(info.get("sharesOutstanding"))
+    market_cap = safe(info.get("marketCap"))
+    total_debt = float(safe(info.get("totalDebt")) or 0)
+    total_cash = float(safe(info.get("totalCash")) or 0)
+    tax_rate   = float(safe(info.get("effectiveTaxRate")) or 0.21)
+    tax_rate   = max(0.05, min(tax_rate, 0.40))
+
+    # TTM FCF: sum last 4 quarters
+    fcf_ttm = None
+    try:
+        cf_q = t.quarterly_cashflow
+        if "Free Cash Flow" in cf_q.index:
+            last4 = cf_q.loc["Free Cash Flow"].iloc[:4].dropna()
+            if len(last4) >= 3:
+                fcf_ttm = float(last4.sum())
+    except Exception:
+        pass
+    if fcf_ttm is None:
+        fcf_ttm = safe(info.get("freeCashflow"))
+    if fcf_ttm is None or fcf_ttm <= 0:
+        raise HTTPException(status_code=422, detail="DCF requires positive trailing FCF — this company does not qualify")
+
+    # Annual FCF history (oldest → newest)
+    fcf_history: list[dict] = []
+    try:
+        cf_a = t.cashflow
+        if "Free Cash Flow" in cf_a.index:
+            rows = [(col, float(cf_a.loc["Free Cash Flow", col])) for col in cf_a.columns[:4]
+                    if not pd.isna(cf_a.loc["Free Cash Flow", col])]
+            rows.reverse()
+            fcf_history = [{"year": col.year, "fcf": round(v / 1e9, 2)} for col, v in rows]
+    except Exception:
+        pass
+
+    # Historical FCF CAGR
+    hist_cagr = None
+    valid = [x for x in fcf_history if x["fcf"] > 0]
+    if len(valid) >= 2:
+        span = valid[-1]["year"] - valid[0]["year"]
+        if span > 0:
+            hist_cagr = (valid[-1]["fcf"] / valid[0]["fcf"]) ** (1 / span) - 1
+
+    # WACC via CAPM
+    rf, erp = 0.043, 0.055
+    ke = rf + beta * erp
+    kd = 0.045
+    try:
+        inc = t.income_stmt
+        for key in ["Interest Expense", "Interest Expense Non Operating"]:
+            if key in inc.index and total_debt > 0:
+                ie = abs(float(inc.loc[key].iloc[0]))
+                if not pd.isna(ie) and ie > 0:
+                    kd = min(ie / total_debt, 0.15)
+                    break
+    except Exception:
+        pass
+
+    equity_val = float(market_cap) if market_cap else (shares_out * price if shares_out else None)
+    if equity_val and total_debt > 0:
+        total_cap = equity_val + total_debt
+        we, wd    = equity_val / total_cap, total_debt / total_cap
+        wacc      = we * ke + wd * kd * (1 - tax_rate)
+    else:
+        wacc, we, wd = ke, 1.0, 0.0
+    wacc = max(0.06, min(wacc, 0.22))
+
+    # Growth scenarios — capped at realistic ceilings
+    if hist_cagr and hist_cagr > 0:
+        bear_g = min(hist_cagr * 0.25, 0.15)
+        base_g = min(hist_cagr * 0.50, 0.30)
+        bull_g = min(hist_cagr * 0.80, 0.50)
+    else:
+        rev_g  = float(safe(info.get("revenueGrowth")) or 0.05)
+        bear_g = max(0.0,  min(rev_g * 0.3, 0.10))
+        base_g = max(0.03, min(rev_g * 0.6, 0.20))
+        bull_g = max(0.07, min(rev_g * 0.9, 0.35))
+
+    net_debt = total_debt - total_cash
+    shares   = float(shares_out) if shares_out else (equity_val / price if equity_val and price else None)
+    if not shares:
+        raise HTTPException(status_code=422, detail="Could not determine shares outstanding")
+
+    scenarios: dict = {}
+    for name, growth, term_g in [("bear", bear_g, 0.020), ("base", base_g, 0.025), ("bull", bull_g, 0.030)]:
+        fcf_proj = fcf_ttm
+        pv_sum, projections = 0.0, []
+        for yr in range(1, 6):
+            fcf_proj *= (1 + growth)
+            pv = fcf_proj / (1 + wacc) ** yr
+            pv_sum += pv
+            projections.append({"year": f"Y{yr}", "fcf": round(fcf_proj / 1e9, 2), "pv": round(pv / 1e9, 2)})
+        pv_tv = (fcf_proj * (1 + term_g) / (wacc - term_g)) / (1 + wacc) ** 5 if wacc > term_g else 0.0
+        iv    = (pv_sum + pv_tv - net_debt) / shares
+        scenarios[name] = {
+            "growthRate":     round(growth * 100, 1),
+            "terminalGrowth": round(term_g * 100, 1),
+            "pvFcfs":         round(pv_sum / 1e9, 2),
+            "pvTerminal":     round(pv_tv / 1e9, 2),
+            "totalPv":        round((pv_sum + pv_tv) / 1e9, 2),
+            "intrinsicValue": round(iv, 2),
+            "upside":         round((iv / price - 1) * 100, 1),
+            "projections":    projections,
+        }
+
+    # Sensitivity: WACC ± 2% vs terminal growth 1.5–3.5%
+    wacc_vals = [round(wacc + d, 4) for d in (-0.02, -0.01, 0.0, 0.01, 0.02)]
+    term_vals = [0.015, 0.020, 0.025, 0.030, 0.035]
+    grid = [
+        [round(_dcf_iv(fcf_ttm, base_g, w, tg, net_debt, shares), 2)
+         if _dcf_iv(fcf_ttm, base_g, w, tg, net_debt, shares) else None
+         for tg in term_vals]
+        for w in wacc_vals
+    ]
+
+    return {
+        "ticker":        ticker,
+        "price":         round(price, 2),
+        "fcfTtm":        round(fcf_ttm / 1e9, 2),
+        "netDebtB":      round(net_debt / 1e9, 2),
+        "sharesB":       round(shares / 1e9, 3),
+        "assumptions": {
+            "wacc":         round(wacc * 100, 2),
+            "costOfEquity": round(ke * 100, 2),
+            "costOfDebt":   round(kd * 100, 2),
+            "beta":         round(beta, 2),
+            "riskFreeRate": round(rf * 100, 2),
+            "taxRate":      round(tax_rate * 100, 1),
+            "weightEquity": round(we * 100, 1),
+            "weightDebt":   round(wd * 100, 1),
+        },
+        "historicalCagr": round(hist_cagr * 100, 1) if hist_cagr else None,
+        "fcfHistory":     fcf_history,
+        "scenarios":      scenarios,
+        "sensitivity": {
+            "waccRates": [round(w * 100, 2) for w in wacc_vals],
+            "termRates":  [round(tg * 100, 1) for tg in term_vals],
+            "grid":       grid,
+        },
+    }
+
+
+@app.get("/api/stock/{ticker}/comps-data")
+def get_comps_data(ticker: str):
+    ticker = ticker.upper()
+    t = yf.Ticker(ticker)
+    info = t.info
+
+    if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
+        raise HTTPException(status_code=404, detail=f"Ticker '{ticker}' not found")
+
+    industry = info.get("industry", "")
+    peers_raw = [p for p in PEER_UNIVERSE.get(industry, []) if p != ticker][:6]
+
+    def _row(sym: str, pi: dict) -> dict:
+        px  = float(pi.get("currentPrice") or pi.get("regularMarketPrice") or 0)
+        mc  = safe(pi.get("marketCap"))
+        return {
+            "ticker":    sym,
+            "name":      pi.get("longName", sym),
+            "marketCapB": round(mc / 1e9, 1) if mc else None,
+            "price":     round(px, 2),
+            "fwdPE":     round(safe(pi.get("forwardPE")), 1)              if safe(pi.get("forwardPE"))     else None,
+            "evEbitda":  round(safe(pi.get("enterpriseToEbitda")), 1)     if safe(pi.get("enterpriseToEbitda")) else None,
+            "evRevenue": round(safe(pi.get("enterpriseToRevenue")), 2)    if safe(pi.get("enterpriseToRevenue")) else None,
+            "revGrowth": round(safe(pi.get("revenueGrowth")) * 100, 1)    if safe(pi.get("revenueGrowth"))  else None,
+            "opMargin":  round(safe(pi.get("operatingMargins")) * 100, 1) if safe(pi.get("operatingMargins")) else None,
+            "netMargin": round(safe(pi.get("profitMargins")) * 100, 1)    if safe(pi.get("profitMargins"))  else None,
+        }
+
+    target = _row(ticker, info)
+
+    peer_rows = []
+    for sym in peers_raw:
+        try:
+            pi = yf.Ticker(sym).info
+            if pi and (pi.get("regularMarketPrice") or pi.get("currentPrice")):
+                peer_rows.append(_row(sym, pi))
+        except Exception:
+            pass
+
+    def _median(key: str) -> float | None:
+        vals = sorted(r[key] for r in peer_rows if r.get(key) is not None)
+        if not vals:
+            return None
+        mid = len(vals) // 2
+        return vals[mid] if len(vals) % 2 else round((vals[mid - 1] + vals[mid]) / 2, 2)
+
+    peer_median = {k: _median(k) for k in ("fwdPE", "evEbitda", "evRevenue", "revGrowth", "opMargin", "netMargin")}
+
+    # Implied prices from peer-median multiples
+    price_t    = target["price"]
+    eps_fwd    = safe(info.get("epsForward"))
+    ebitda     = safe(info.get("ebitda"))
+    revenue    = safe(info.get("totalRevenue"))
+    net_debt_t = float(safe(info.get("totalDebt")) or 0) - float(safe(info.get("totalCash")) or 0)
+    shares_t   = safe(info.get("sharesOutstanding"))
+    implied: dict = {}
+
+    if peer_median["fwdPE"] and eps_fwd and eps_fwd > 0:
+        iv = round(peer_median["fwdPE"] * eps_fwd, 2)
+        implied["byFwdPE"] = {"impliedPrice": iv, "upside": round((iv / price_t - 1) * 100, 1)}
+
+    if peer_median["evEbitda"] and ebitda and shares_t:
+        iv = round((peer_median["evEbitda"] * ebitda - net_debt_t) / shares_t, 2)
+        implied["byEVEBITDA"] = {"impliedPrice": iv, "upside": round((iv / price_t - 1) * 100, 1)}
+
+    if peer_median["evRevenue"] and revenue and shares_t:
+        iv = round((peer_median["evRevenue"] * revenue - net_debt_t) / shares_t, 2)
+        implied["byEVRevenue"] = {"impliedPrice": iv, "upside": round((iv / price_t - 1) * 100, 1)}
+
+    return {
+        "ticker":     ticker,
+        "industry":   industry,
+        "target":     target,
+        "peers":      peer_rows,
+        "peerMedian": peer_median,
+        "implied":    implied,
+    }
+
+
+# ── Portfolio endpoints ───────────────────────────────────────────────────────
+
+class PositionInput(BaseModel):
+    ticker:       str
+    shares:       float
+    purchaseDate: str   # "YYYY-MM-DD"
+
+class PortfolioRequest(BaseModel):
+    positions: List[PositionInput]
+
+
+@app.post("/api/portfolio/performance")
+def get_portfolio_performance(body: PortfolioRequest):
+    if not body.positions:
+        raise HTTPException(status_code=422, detail="No positions provided")
+
+    today        = pd.Timestamp.now().normalize()
+    one_year_ago = today - pd.Timedelta(days=365)
+
+    parsed = []
+    for p in body.positions:
+        try:
+            dt = pd.Timestamp(p.purchaseDate).normalize()
+        except Exception:
+            dt = one_year_ago
+        parsed.append({"ticker": p.ticker.upper(), "shares": p.shares, "date": dt})
+
+    earliest  = min(p["date"] for p in parsed)
+    start_str = earliest.strftime("%Y-%m-%d")
+    end_str   = (today + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # Fetch per-ticker using Ticker.history() — consistent across yfinance versions
+    fetch_syms = list(set(p["ticker"] for p in parsed) | {"SPY"})
+    price_cols: dict[str, pd.Series] = {}
+    for sym in fetch_syms:
+        try:
+            hist = yf.Ticker(sym).history(start=start_str, end=end_str)
+            if hist.empty:
+                continue
+            idx = hist.index.tz_localize(None) if hist.index.tz is not None else hist.index
+            hist.index = idx
+            price_cols[sym] = hist["Close"].rename(sym)
+        except Exception:
+            pass
+
+    if not price_cols or not any(p["ticker"] in price_cols for p in parsed):
+        raise HTTPException(status_code=422, detail="Could not fetch price history for any position")
+
+    # Align all series onto a common date index, forward-fill gaps
+    prices = pd.DataFrame(price_cols).sort_index().ffill().bfill()
+
+    # Build daily portfolio NAV
+    nav_rows = []
+    for date, row in prices.iterrows():
+        value = 0.0
+        for p in parsed:
+            if date < p["date"]:
+                continue
+            px = row.get(p["ticker"])
+            if px is None or pd.isna(px):
+                continue
+            value += p["shares"] * float(px)
+        if value > 0:
+            nav_rows.append({"date": date, "value": value})
+
+    if not nav_rows:
+        raise HTTPException(status_code=422, detail="Could not compute portfolio history")
+
+    # Normalise SPY benchmark to portfolio's starting value
+    start_value = nav_rows[0]["value"]
+    start_date  = nav_rows[0]["date"]
+
+    spy_series  = prices["SPY"] if "SPY" in prices.columns else None
+    spy_start: float | None = None
+    if spy_series is not None:
+        candidates = spy_series.loc[spy_series.index >= start_date].dropna()
+        if not candidates.empty:
+            spy_start = float(candidates.iloc[0])
+
+    chart = []
+    for n in nav_rows:
+        point: dict = {"date": n["date"].strftime("%Y-%m-%d"), "value": round(n["value"], 2)}
+        if spy_start and spy_series is not None:
+            sp = spy_series.get(n["date"])
+            if sp is not None and not pd.isna(sp):
+                point["benchmark"] = round(start_value * float(sp) / spy_start, 2)
+        chart.append(point)
+
+    end_value = chart[-1]["value"]
+    total_ret = (end_value / start_value - 1) * 100
+
+    bench_ret: float | None = None
+    if len(chart) > 1 and "benchmark" in chart[-1] and "benchmark" in chart[0]:
+        bench_ret = (chart[-1]["benchmark"] / chart[0]["benchmark"] - 1) * 100
+
+    return {
+        "chart": chart,
+        "stats": {
+            "startDate":       start_date.strftime("%Y-%m-%d"),
+            "startValue":      round(start_value, 2),
+            "currentValue":    round(end_value, 2),
+            "totalReturn":     round(total_ret, 2),
+            "benchmarkReturn": round(bench_ret, 2) if bench_ret is not None else None,
+            "alpha":           round(total_ret - bench_ret, 2) if bench_ret is not None else None,
+        },
+    }
+
+
+# ── Portfolio batch-price endpoint ────────────────────────────────────────────
+@app.get("/api/portfolio/prices")
+def get_portfolio_prices(tickers: str):
+    """Return price, daily change, and name for a comma-separated list of tickers."""
+    result: dict = {}
+    for sym in tickers.upper().split(","):
+        sym = sym.strip()
+        if not sym:
+            continue
+        try:
+            info = yf.Ticker(sym).info
+            if not info:
+                continue
+            price = float(info.get("currentPrice") or info.get("regularMarketPrice") or 0)
+            prev  = float(info.get("previousClose") or info.get("regularMarketPreviousClose") or price)
+            result[sym] = {
+                "price":     round(price, 2),
+                "prevClose": round(prev, 2),
+                "changePct": round((price / prev - 1) * 100, 2) if prev else 0.0,
+                "name":      info.get("longName", sym),
+            }
+        except Exception:
+            pass
+    return {"prices": result}

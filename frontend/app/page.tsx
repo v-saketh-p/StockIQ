@@ -4,6 +4,8 @@ import { useState, useEffect } from "react";
 import SearchBar from "@/components/SearchBar";
 import StockDashboard from "@/components/StockDashboard";
 import Watchlist, { WatchlistGroup } from "@/components/Watchlist";
+import PortfolioTracker from "@/components/PortfolioTracker";
+import { BarChart2, Briefcase } from "lucide-react";
 
 function genId() {
   return Math.random().toString(36).slice(2, 9);
@@ -17,6 +19,7 @@ export default function Home() {
   const [ticker,       setTicker]       = useState<string | null>(null);
   const [watchlists,   setWatchlists]   = useState<WatchlistGroup[]>(DEFAULT_WATCHLISTS);
   const [activeListId, setActiveListId] = useState<string>("default");
+  const [view,         setView]         = useState<"research" | "portfolio">("research");
 
   // Load from localStorage after mount
   useEffect(() => {
@@ -83,20 +86,39 @@ export default function Home() {
     <div className="flex overflow-hidden" style={{ height: "calc(100vh - 56px)", background: "var(--background)" }}>
       {/* Sidebar */}
       <aside
-        className="w-56 flex-shrink-0 flex flex-col border-r py-5 px-3 gap-4 overflow-hidden"
+        className="w-56 flex-shrink-0 flex flex-col border-r py-4 px-3 gap-3 overflow-hidden"
         style={{ background: "var(--surface)", borderColor: "var(--border)" }}
       >
-        <Watchlist
-          watchlists={watchlists}
-          activeListId={resolvedId}
-          activeTicker={ticker}
-          onSelectTicker={setTicker}
-          onSelectList={setActiveListId}
-          onCreateList={createWatchlist}
-          onRenameList={renameWatchlist}
-          onDeleteList={deleteWatchlist}
-          onRemoveTicker={removeFromWatchlist}
-        />
+        {/* View toggle */}
+        <div className="flex gap-1 p-1 rounded-xl flex-shrink-0"
+          style={{ background: "var(--surface2)", border: "1px solid var(--border)" }}>
+          {([
+            { id: "research",  label: "Research",  icon: <BarChart2 size={11} /> },
+            { id: "portfolio", label: "Portfolio", icon: <Briefcase size={11} /> },
+          ] as const).map(v => (
+            <button key={v.id} onClick={() => setView(v.id)}
+              className="flex-1 flex items-center justify-center gap-1 text-[11px] font-semibold py-1.5 rounded-lg transition-all"
+              style={view === v.id
+                ? { background: "var(--surface)", color: "var(--text)", boxShadow: "0 1px 3px var(--shadow)" }
+                : { color: "var(--muted2)" }}>
+              {v.icon}{v.label}
+            </button>
+          ))}
+        </div>
+
+        {view === "research" && (
+          <Watchlist
+            watchlists={watchlists}
+            activeListId={resolvedId}
+            activeTicker={ticker}
+            onSelectTicker={setTicker}
+            onSelectList={setActiveListId}
+            onCreateList={createWatchlist}
+            onRenameList={renameWatchlist}
+            onDeleteList={deleteWatchlist}
+            onRemoveTicker={removeFromWatchlist}
+          />
+        )}
       </aside>
 
       {/* Main */}
@@ -115,7 +137,9 @@ export default function Home() {
         </header>
 
         <div className="flex-1 overflow-y-auto p-6" data-scroll>
-          {ticker ? (
+          {view === "portfolio" ? (
+            <PortfolioTracker onSelectTicker={t => { setTicker(t); setView("research"); }} />
+          ) : ticker ? (
             <StockDashboard ticker={ticker} onAddToWatchlist={addToWatchlist} />
           ) : (
             <div className="flex flex-col items-center justify-center h-full gap-6">
