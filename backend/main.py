@@ -646,142 +646,195 @@ def get_stock_report(ticker: str):
 
 """
 
-    # ── Groq prompt ───────────────────────────────────────────────────────────
+    # ── Python-generated data sections (zero AI involvement) ─────────────────
+    # Institutional flow cards
+    inst_html = f"""
+<div class="section">
+<div class="section-title">Part 5 — Institutional Flow</div>
+<div class="card-grid">
+  <div class="card"><div class="card-label">Analyst consensus</div><div class="card-value">{'Strong Buy' if strong_buy+buy_n > hold_n+sell_n+strong_sell else 'Hold' if hold_n >= sell_n+strong_sell else 'Sell'}</div><div class="card-sub">Buy: {strong_buy+buy_n} &nbsp;|&nbsp; Hold: {hold_n} &nbsp;|&nbsp; Sell: {sell_n+strong_sell} &nbsp;|&nbsp; {analyst_count or 'N/A'} analysts</div></div>
+  <div class="card"><div class="card-label">Avg price target</div><div class="card-value">${num(target_mean)}</div><div class="card-sub"><span class="badge {'badge-green' if upside_pct and upside_pct>0 else 'badge-red'}">{pos(upside_pct)}% {'upside' if upside_pct and upside_pct>0 else 'downside'} from ${round(price_now,2)}</span></div></div>
+  <div class="card"><div class="card-label">Short interest</div><div class="card-value">{f'{short_pct}%' if short_pct else 'N/A'}</div><div class="card-sub">Days to cover: {num(short_ratio)}</div></div>
+  <div class="card"><div class="card-label">Institutional ownership</div><div class="card-value">{f'{round(inst_own*100,1)}%' if inst_own else 'N/A'}</div><div class="card-sub">of float held by institutions</div></div>
+</div>
+</div>
+"""
+
+    # Technical levels — Python anchors every number
+    tech_html = f"""
+<div class="section">
+<div class="section-title">Part 6 — Technical Levels</div>
+<table>
+  <tr><th>Level</th><th>Price</th><th>Current price vs level</th><th>Significance</th></tr>
+  <tr><td>52-Week High</td><td>${round(week52_high,2)}</td><td><span class="badge {w52_class}">{f'{pct_52w}%' if pct_52w else 'N/A'} of high</span></td><td>Key resistance</td></tr>
+  <tr><td>50-Day MA</td><td>${round(ma50,2)}</td><td><span class="badge {'badge-green' if price_now>ma50 else 'badge-red'}">Price {'above' if price_now>ma50 else 'below'} — {round(abs(price_now-ma50)/ma50*100,1)}% {'gap' if price_now>ma50 else 'below'}</span></td><td>Near-term trend support</td></tr>
+  <tr><td>200-Day MA</td><td>${round(ma200,2)}</td><td><span class="badge {'badge-green' if price_now>ma200 else 'badge-red'}">Price {'above' if price_now>ma200 else 'below'} — {round(abs(price_now-ma200)/ma200*100,1)}% {'gap' if price_now>ma200 else 'below'}</span></td><td>Long-term trend support</td></tr>
+  <tr><td>52-Week Low</td><td>${round(week52_low,2)}</td><td><span class="badge badge-blue">{round((price_now-week52_low)/week52_low*100,1)}% above low</span></td><td>Downside floor reference</td></tr>
+</table>
+</div>
+"""
+
+    # Trade plan — Python calculates levels from MA data
+    stop_loss   = round(ma200 * 0.95, 2)
+    entry_low   = round(ma50  * 0.98, 2)
+    entry_high  = round(ma50  * 1.02, 2)
+    target1     = round(week52_high, 2)
+    target2     = round(week52_high * 1.15, 2)
+    risk        = round(price_now - stop_loss, 2)
+    reward1     = round(target1 - price_now, 2)
+    rr1         = round(reward1 / risk, 1) if risk > 0 else 0
+
+    trade_html  = f"""
+<div class="section">
+<div class="section-title">Part 7 — Trade Plan</div>
+<div class="raised" style="border:2px solid var(--r-amber-br);">
+<div class="card-grid">
+  <div class="card"><div class="card-label">Entry zone</div><div class="card-value">${entry_low}–${entry_high}</div><div class="card-sub">Near 50-Day MA (${round(ma50,2)})</div></div>
+  <div class="card"><div class="card-label">Stop-loss</div><div class="card-value">${stop_loss}</div><div class="card-sub">5% below 200-Day MA (${round(ma200,2)})</div></div>
+  <div class="card"><div class="card-label">Target 1</div><div class="card-value">${target1}</div><div class="card-sub">52-Week high retest</div></div>
+  <div class="card"><div class="card-label">Target 2</div><div class="card-value">${target2}</div><div class="card-sub">15% above 52W high</div></div>
+  <div class="card"><div class="card-label">Risk : Reward</div><div class="card-value">{rr1} : 1</div><div class="card-sub">To Target 1</div></div>
+</div>
+</div>
+</div>
+"""
+
+    # Conviction scorecard — Python builds the table shell with placeholders for AI scores
+    scorecard_factors = [
+        ("Macro Alignment",     "10%"),
+        ("Fundamental Quality", "15%"),
+        ("Competitive Moat",    "10%"),
+        ("Stewardship",         "10%"),
+        ("Earnings Quality",    "10%"),
+        ("Valuation",           "15%"),
+        ("Asymmetry",           "10%"),
+        ("Institutional Flow",  "5%"),
+        ("Technical Setup",     "10%"),
+        ("Risk / Reward",       "5%"),
+    ]
+    scorecard_rows = "\n".join(
+        f'  <tr><td>{f}</td><td id="sc-{i}">—</td><td>{w}</td><td id="sc-w-{i}">—</td><td id="sc-note-{i}"></td></tr>'
+        for i, (f, w) in enumerate(scorecard_factors)
+    )
+    scorecard_html = f"""
+<div class="section">
+<div class="section-title">Part 9 — Conviction Scorecard</div>
+<table>
+  <tr><th>Factor</th><th>Score /10</th><th>Weight</th><th>Weighted</th><th>Rationale</th></tr>
+{scorecard_rows}
+  <tr><td><strong>TOTAL</strong></td><td>—</td><td>100%</td><td id="sc-total"><strong>— / 10</strong></td><td></td></tr>
+</table>
+</div>
+"""
+
+    # Scenario table
+    scenario_html = f"""
+<div class="section">
+<div class="section-title">Bull / Base / Bear Scenarios</div>
+<table>
+  <tr><th>Scenario</th><th>Probability</th><th>12M Price Target</th><th>Key Assumption</th></tr>
+  <tr><td><span class="badge badge-green">Bull</span></td><td>—</td><td>—</td><td></td></tr>
+  <tr><td><span class="badge badge-amber">Base</span></td><td>—</td><td>—</td><td></td></tr>
+  <tr><td><span class="badge badge-red">Bear</span></td><td>—</td><td>—</td><td></td></tr>
+</table>
+</div>
+"""
+
+    data_sections_html = inst_html + tech_html + trade_html + scorecard_html + scenario_html
+
+    # ── AI prompt — narrative ONLY, zero numbers ──────────────────────────────
     system_msg = (
         "You are a senior equity research analyst at a top-tier hedge fund. "
-        "You write institutional-quality, opinionated research with specific reasoning. "
-        "CRITICAL RULES: (1) NEVER invent, estimate, or guess any number — only reference "
-        "figures explicitly given in the LIVE DATA block. If a data point is missing, say "
-        "'data not available' rather than guessing. (2) Be direct and contrarian where "
-        "warranted — do not hedge every statement. (3) Every section must contain specific "
-        "reasoning, not generic platitudes. (4) The S&P 500 / SPY 6-month return is given "
-        "to you in LIVE DATA — do not use any other figure for it."
+        "ABSOLUTE RULE: Do NOT write any numbers, percentages, dollar amounts, or financial figures. "
+        "All numbers are already displayed in the report from a live data feed. "
+        "Your job is ONLY to write qualitative narrative — the WHY and the SO WHAT. "
+        "Reference data directionally (e.g. 'margins are strong', 'valuation is stretched', "
+        "'the golden cross confirms bullish momentum') but NEVER quote a specific figure. "
+        "Be direct, opinionated, and contrarian where warranted. Minimum 4 sentences per section."
     )
 
-    prompt = f"""Write a hedge-fund-style equity research report on {ticker} ({info.get('longName', ticker)}) in HTML format.
+    prompt = f"""Write narrative analysis for {ticker} ({info.get('longName', ticker)}) — {info.get('sector','N/A')}, {info.get('industry','N/A')}.
 
-LIVE DATA — use ONLY these numbers, do not invent others:
-Ticker: {ticker} | Company: {info.get('longName', ticker)} | Sector: {info.get('sector','N/A')} | Industry: {info.get('industry','N/A')}
-Price: ${round(price_now,2)} | Market Cap: {bn(market_cap)} | Beta: {num(beta)}
-Stock 6M return: {pos(stock_ret_6m)}% | SPY 6M return: {pos(spy_ret_6m)}% | Outperformance vs SPY (6M): {pos(rs_6m)}%
-Stock 3M return: {pos(stock_ret_3m)}% | SPY 3M return: {pos(spy_ret_3m)}% | Outperformance vs SPY (3M): {pos(rs_3m)}%
-1-Year return: {pos(yr_return)}%
-Revenue TTM: {bn(total_rev)} | EBITDA: {bn(ebitda)} | Net Income: {bn(net_income)} | FCF: {bn(free_cf)}
-Revenue Growth YoY: {pct(rev_growth)} | EPS Growth YoY: {pct(eps_growth)}
-Gross Margin: {pct(gross_margin)} | Op Margin: {pct(op_margin)} | Net Margin: {pct(net_margin)} | EBITDA Margin: {f'{ebitda_margin}%' if ebitda_margin else 'N/A'}
-ROE: {pct(roe)} | ROA: {pct(roa)} | FCF Conversion: {f'{fcf_conversion}%' if fcf_conversion else 'N/A'}
-P/E Forward: {num(pe_forward)} | P/E Trailing: {num(pe_trailing)} | EV/EBITDA: {num(ev_ebitda)} | EV/Revenue: {num(ev_revenue)} | PEG: {num(peg_ratio)} | P/FCF: {num(pfcf)}
-Debt/Equity: {num(debt_eq)} | Net Debt/EBITDA: {num(net_debt_ebitda)} | Current Ratio: {num(current_ratio)}
-Total Debt: {bn(total_debt)} | Cash: {bn(total_cash)} | Net Debt: {bn(net_debt)}
-RSI (14d): {num(rsi_val)} | MACD: {macd_label} | MA50: ${round(ma50,2)} | MA200: ${round(ma200,2)} | MA Structure: {ma_label}
-52W High: ${round(week52_high,2)} | 52W Low: ${round(week52_low,2)} | % of 52W High: {f'{pct_52w}%' if pct_52w else 'N/A'}
-Short Interest: {f'{short_pct}%' if short_pct else 'N/A'} | Days to Cover: {num(short_ratio)} | Inst. Ownership: {f'{round(inst_own*100,1)}%' if inst_own else 'N/A'}
-Analyst recs: {analyst_recs_str} | Price target mean: ${num(target_mean)} | High: ${num(target_high)} | Low: ${num(target_low)} | Analysts: {analyst_count or 'N/A'}
-Upside to mean target: {pos(upside_pct)}%
-Next earnings: {next_earnings} | EPS (current yr): {num(eps_curr)} | EPS (forward): {num(eps_fwd)}
+SIGNALS (directional only — do NOT write any numbers):
+- Profitability: {'strong margins' if op_margin and op_margin>0.15 else 'moderate margins' if op_margin and op_margin>0.05 else 'thin margins'}, {'growing' if rev_growth and rev_growth>0 else 'declining'} revenue, {'healthy' if free_cf and free_cf>0 else 'negative'} FCF
+- Valuation: {'expensive' if pe_forward and pe_forward>30 else 'fairly valued' if pe_forward and pe_forward>15 else 'cheap' if pe_forward else 'unknown'}, EV/EBITDA {'elevated' if ev_ebitda and ev_ebitda>20 else 'moderate' if ev_ebitda and ev_ebitda>10 else 'low' if ev_ebitda else 'unknown'}
+- Balance sheet: {'leveraged' if debt_eq and debt_eq>100 else 'conservative'}, {'net cash' if net_debt and net_debt<0 else 'net debt'}
+- Technical: {ma_label}, RSI {'overbought' if rsi_val and rsi_val>70 else 'oversold' if rsi_val and rsi_val<30 else 'neutral'}, MACD {macd_label}, {'near 52W high' if pct_52w and pct_52w>85 else 'mid-range' if pct_52w and pct_52w>60 else 'near 52W low'}
+- Sentiment: {'bullish consensus' if strong_buy+buy_n > hold_n+sell_n+strong_sell else 'mixed'}, {'elevated short interest' if short_pct and short_pct>10 else 'normal short interest'}, {'high' if inst_own and inst_own>0.7 else 'moderate'} institutional ownership
 
-CSS CLASSES available — use exactly as shown:
-<div class="section"><div class="section-title">Title</div>...</div>
-<div class="sub-title">SUBTITLE</div>
-<div class="raised"><strong>Title</strong><p>text</p></div>
-<div class="row"><div class="raised">left</div><div class="raised">right</div></div>
-<span class="badge badge-green">text</span>  (also badge-amber, badge-red, badge-blue)
-<div class="verdict v-green"><strong>Title</strong><p>text</p></div>  (also v-amber, v-red)
-<div class="flag"><strong>⚠ Warning</strong><p>text</p></div>
-<div class="risk-item risk-high"><strong>Risk</strong><p>text</p></div>  (also risk-med, risk-low)
-<div class="opt"><strong>Opportunity</strong><p>text</p></div>
-<div class="final"><h2>RATING</h2><p>Conviction: X/10</p><p><em>thesis</em></p></div>
-<div class="card-grid"><div class="card"><div class="card-label">label</div><div class="card-value">value</div><div class="card-sub">sub</div></div></div>
-<ul class="check"><li>item</li></ul>
-Standard <table><tr><th>/<td> with badge spans inside cells
+CSS CLASSES (use exactly): section/section-title, sub-title, raised, row, badge-green/amber/red/blue, verdict v-green/v-amber/v-red, flag, risk-item risk-high/med/low, opt, final, ul.check
 
-Output ONLY HTML body content — no <html>, <head>, <style>, or <body> tags.
-Be specific, opinionated, and direct. Colour-code every verdict with badges.
-Write 4–5 substantive sentences per sub-section minimum — no one-liners.
+Output ONLY HTML body content. NO numbers, NO percentages, NO dollar amounts — those are already in the report.
+Write 4–5 sentences per sub-section minimum.
 
-STRUCTURE — follow every part exactly, minimum 4 substantive sentences per sub-section:
+SECTIONS TO WRITE (in order):
 
 Part 0 — Macro Regime
-  - Two .raised boxes side by side in a .row: left = "Why the macro fits {ticker}" (growth/rates/risk appetite), right = "Macro risks specific to {ticker}"
-  - Each box ends with a badge verdict (badge-green / badge-amber / badge-red)
-  - Be specific to {ticker}'s sector, not generic macro commentary
+  Two .raised boxes in a .row: left = tailwinds for {ticker}'s sector right now, right = macro headwinds
+  Each ends with a badge verdict. Be specific to this sector, not generic.
 
 Part 1 — Business & Fundamentals
-  - 2-3 sentences on exactly what {ticker} does and how it earns money — specific, not generic
-  - .sub-title "Profitability — Score: X/10": table with columns [Metric | Value (from LIVE DATA) | Healthy Range | Status badge] — include gross margin, op margin, net margin, ROE, revenue growth, EPS growth, FCF conversion
-  - .sub-title "Capital Efficiency": .raised box discussing ROIC vs WACC estimate, cash flow quality, accruals ratio signal
-  - .sub-title "Quality Acceleration": is the business getting better or worse quarter over quarter? Reference margin trends from LIVE DATA
-  - Close with verdict v-green/v-amber/v-red: overall fundamental quality score /10
+  What {ticker} does and how it earns money (specific, not generic).
+  Sub-title "Profitability Assessment": narrative on margin quality, sustainability, and what drives them.
+  Sub-title "Capital Efficiency": ROIC vs cost of capital assessment, FCF quality, earnings sustainability.
+  Sub-title "Quality Trajectory": is the business accelerating or decelerating? What's the trend?
+  Close with verdict box: overall fundamental quality score /10.
 
 Part 2 — Competitive Moat
-  - Table with columns [Moat source | Evidence | Strength badge] — 5 rows minimum, use your knowledge of {ticker}
-  - .raised box: moat trajectory — is it widening or narrowing? Be specific about competitive threats
-  - Close with verdict: moat rating badge + widening/narrowing assessment
+  Table [Moat source | Evidence | Strength badge] — 5 rows using your knowledge of {ticker}.
+  Raised box: is the moat widening or narrowing? Name the specific competitive threats.
+  Close with verdict.
 
 Part 2B — Stewardship & Management
-  - .raised box on CEO/leadership: background, track record, key decisions
-  - .raised box on capital allocation: buybacks, dividends, M&A, debt management — reference actual cash/debt figures from LIVE DATA
-  - Governance note: share structure, any red flags
-  - Close with badge verdict on management quality
+  Raised box on leadership: who runs this company, their track record, key strategic decisions.
+  Raised box on capital allocation: how do they deploy cash — buybacks, dividends, M&A, debt?
+  Governance note. Close with badge verdict.
 
 Part 3 — Earnings Quality & Estimates
-  - Table with recent quarters if known, otherwise focus on estimate revision trend (use analyst data from LIVE DATA)
-  - Are earnings driven by real operating leverage or one-time items?
-  - Guidance style: conservative/aggressive? Do they beat or miss?
-  - Close with badge: estimate revision trend (UP/DOWN/FLAT)
+  Are reported earnings high quality or distorted by one-time items or accounting choices?
+  Estimate revision trend — are analysts raising or cutting numbers?
+  Guidance credibility — does management guide conservatively or aggressively?
+  Close with badge: UP / FLAT / DOWN.
 
-Part 4 — Valuation
-  - Table with columns [Multiple | Current (from LIVE DATA) | 5Y avg est. | Sector median est. | Assessment badge] — P/E fwd, EV/EBITDA, EV/Rev, P/FCF, PEG
-  - Is {ticker} cheap, fair, or expensive? Be opinionated and reference the specific multiples
-  - Analyst target context: mean target ${num(target_mean)}, current price ${round(price_now,2)} — what does the gap imply?
-  - Close with verdict: valuation assessment
+Part 4 — Valuation Assessment
+  Is {ticker} cheap, fair, or expensive vs its own history and peers? Be opinionated.
+  What does the current valuation imply about growth expectations?
+  What's the analyst consensus view on value vs current price?
+  Close with verdict.
 
 Part 4B — Asymmetry Check
-  - .row with two .raised boxes: left = downside floor (what's the bear case price and why), right = upside ceiling (bull case price and catalyst)
-  - Asymmetry ratio: is the risk:reward better than 2:1?
-  - .opt box for any free optionality (hidden assets, spin-offs, new markets)
-  - Close with verdict: asymmetry rating
+  .row: left = downside floor narrative (what breaks, how far could it fall), right = upside ceiling (what drives re-rating)
+  Is the risk:reward skewed favourably or unfavourably at current levels?
+  .opt box: any free optionality or hidden value not in the headline numbers?
+  Close with verdict.
 
-Part 5 — Institutional Flow & Competitive Landscape
-  - Open with .card-grid of exactly 4 cards using numbers from LIVE DATA:
-      Card 1 "Analyst consensus" — buy/hold/sell count + total analysts
-      Card 2 "Avg price target" — mean target vs current, above/below badge
-      Card 3 "Short interest" — short % of float + DTC
-      Card 4 "Institutional ownership" — % held by institutions
-  - .raised block: identify {ticker}'s single closest publicly-traded competitor. 3 paragraphs: (1) business model comparison, (2) financial comparison (leverage, margins, valuation using LIVE DATA for {ticker}'s side), (3) which is the better risk-adjusted choice today and why
-  - Comment on notable strategic investors, recent index inclusions, insider activity
-  - Close with verdict box: overall institutional sentiment
+Part 5B — Competitive Landscape  [this slots AFTER the data cards already shown above]
+  Identify {ticker}'s single closest publicly-traded competitor.
+  Three paragraphs: business model comparison, financial profile comparison, which is the better risk-adjusted buy today.
+  Close with verdict.
 
-Part 6 — Technical Analysis
-  - Table [Timeframe | Trend | Evidence badge] — daily/weekly/monthly
-  - Key levels: support at MA50 (${round(ma50,2)}) and MA200 (${round(ma200,2)}), resistance at 52W high (${round(week52_high,2)}) — reference these exact numbers
-  - RSI ({num(rsi_val)}), MACD ({macd_label}), MA structure ({ma_label}) interpretation — specific not generic
-  - Chart pattern if identifiable
-  - Close with badge: technical setup rating
-
-Part 7 — Trade Plan
-  - .raised box with border: entry zone in $ (specific range), stop-loss in $ (specific), Target 1 in $, Target 2 in $, risk:reward ratio
-  - Use MA levels and 52W data from LIVE DATA to anchor the levels
-  - Position sizing commentary: how much conviction warrants in a portfolio context?
+Part 6B — Technical Narrative  [slots AFTER the technical levels table already shown above]
+  Interpret the MA structure and momentum signals — what do they collectively say about trend?
+  Where is the most likely path of least resistance — up or down — and why?
+  Any chart pattern or volume signal worth flagging?
+  Close with badge: technical setup BULLISH / NEUTRAL / BEARISH.
 
 Part 8 — Catalysts & Roadmap
-  - Three .opt boxes: near-term catalyst (0-3 months), medium-term (3-12 months), long-term (12months+)
-  - Each catalyst must be specific to {ticker}, not generic "earnings beat"
+  Three .opt boxes: near-term (0-3M), medium-term (3-12M), long-term (12M+). Specific to {ticker}.
 
 Part 8B — Market Narrative
-  - What is the dominant market narrative about {ticker} right now?
-  - What assumptions are implied at the current price of ${round(price_now,2)}?
-  - Where could the narrative shift, and in which direction?
+  What story is the market telling about {ticker} right now?
+  What assumptions are baked into the current price?
+  Where could the narrative shift?
 
 Part 8C — Risks & Monitoring
-  - Three .risk-item divs ranked risk-high / risk-med / risk-low — specific thesis breakers, not generic risks
-  - ul.check monitoring checklist: 6 specific metrics with exact thresholds (e.g. "Gross margin below 45% for 2 consecutive quarters")
+  Three .risk-item divs (risk-high, risk-med, risk-low) — specific thesis breakers.
+  ul.check monitoring checklist: 6 items with specific qualitative thresholds.
 
-Part 9 — Conviction Scorecard & Final Verdict
-  - Table: 10 factors (Macro Alignment, Fundamental Quality, Competitive Moat, Stewardship, Earnings Quality, Valuation, Asymmetry, Institutional Flow, Technical Setup, Risk/Reward) — each with Score /10, Weight %, Weighted score, one-line rationale
-  - Total weighted score /10
-  - Bull/Base/Bear scenario table: [Scenario | Probability | 12M target | Key assumption]
-  - .final box: rating (BUY/HOLD/SELL/SPECULATIVE BUY), conviction /10, one-liner thesis in italics"""
+Part 9B — Scorecard Narrative & Final Verdict  [scorecard table already shown above — fill in the narrative here]
+  For each of the 10 scorecard factors, write ONE sentence of rationale.
+  Then write the Bull/Base/Bear scenario descriptions (the table shell is already shown — just fill in probability, target, and assumption for each row).
+  Close with .final verdict box: BUY / HOLD / SELL / SPECULATIVE BUY, conviction /10, one-liner thesis in italics."""
 
     footer_html = """
 <p style="font-size:11px; color:var(--r-sub); margin-top:24px; padding-top:12px; border-top:1px solid var(--r-border);">
@@ -791,8 +844,8 @@ Data sourced from yfinance. AI analysis generated by Groq / llama-3.3-70b — ve
 </body></html>"""
 
     def stream_html_report():
-        # 1. Send Python-generated header immediately
-        yield f"data: {json.dumps({'text': header_html})}\n\n"
+        # 1. Send Python-generated header + all data sections immediately
+        yield f"data: {json.dumps({'text': header_html + data_sections_html})}\n\n"
 
         # 2. Stream from AI provider — tries Cerebras first, falls back to Groq on 429
         last_error = "No providers configured"
@@ -813,7 +866,7 @@ Data sourced from yfinance. AI analysis generated by Groq / llama-3.3-70b — ve
                         ],
                         "stream": True,
                         "temperature": 0.25,
-                        "max_tokens": 16000,
+                        "max_tokens": 8000,
                     },
                     timeout=120,
                 ) as resp:
