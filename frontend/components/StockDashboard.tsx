@@ -9,6 +9,8 @@ import TechnicalGauge from "./TechnicalGauge";
 import AIReport from "./AIReport";
 import ChatPanel from "./ChatPanel";
 import FinancialCharts from "./FinancialCharts";
+import DCFModel from "./DCFModel";
+import CompsTable from "./CompsTable";
 
 interface StockData {
   ticker: string;
@@ -105,7 +107,7 @@ export default function StockDashboard({
   const [loading,   setLoading]   = useState(false);
   const [error,     setError]     = useState<string | null>(null);
   const [chatOpen,  setChatOpen]  = useState(false);
-  const [activeTab, setActiveTab] = useState<"overview" | "research">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "dcf" | "comps" | "research">("overview");
 
   async function fetchData() {
     setLoading(true);
@@ -290,6 +292,8 @@ export default function StockDashboard({
         style={{ background: "var(--surface2)", border: "1px solid var(--border)" }}>
         {([
           { id: "overview",  label: "Overview",    icon: <BarChart2 size={12} /> },
+          { id: "dcf",       label: "DCF Model",   icon: <DollarSign size={12} /> },
+          { id: "comps",     label: "Comps",       icon: <Layers size={12} /> },
           { id: "research",  label: "AI Research", icon: <Sparkles  size={12} /> },
         ] as const).map(tab => (
           <button key={tab.id}
@@ -364,6 +368,14 @@ export default function StockDashboard({
 
         </div>
         </>
+      )}
+
+      {activeTab === "dcf" && (
+        <DCFModel ticker={data.ticker} />
+      )}
+
+      {activeTab === "comps" && (
+        <CompsTable ticker={data.ticker} />
       )}
 
       <div style={{ display: activeTab === "research" ? "block" : "none" }}>
