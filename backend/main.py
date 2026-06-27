@@ -718,7 +718,8 @@ async def ollama_stream_async(prompt: str):
     except asyncio.CancelledError:
         return  # browser disconnected — Ollama connection freed immediately
     except (httpx.TimeoutException, httpx.RemoteProtocolError):
-        yield f"data: {json.dumps({'text': '\n\n[Generation timed out]'})}\n\n"
+        timeout_msg = json.dumps({"text": "\n\n[Generation timed out]"})
+        yield f"data: {timeout_msg}\n\n"
     yield "data: [DONE]\n\n"
 
 
@@ -1420,73 +1421,120 @@ def get_comps_data(ticker: str):
 
 # ── Portfolio endpoints ───────────────────────────────────────────────────────
 
-class PositionInput(BaseModel):
-    ticker:       str
-    shares:       float
-    purchaseDate: str   # "YYYY-MM-DD"
+class TransactionInput(BaseModel):
+    ticker:   str
+    date:     str      # "YYYY-MM-DD"
+    shares:   float
+    price:    float
+    currency: str = "USD"   # "USD", "GBP", "GBX"
+    type:     str      # "buy" | "sell"
 
 class PortfolioRequest(BaseModel):
-    positions: List[PositionInput]
+    transactions: List[TransactionInput] = []
 
 
 @app.post("/api/portfolio/performance")
 def get_portfolio_performance(body: PortfolioRequest):
-    if not body.positions:
-        raise HTTPException(status_code=422, detail="No positions provided")
+    if not body.transactions:
+        raise HTTPException(status_code=422, detail="No transactions provided")
 
-    today        = pd.Timestamp.now().normalize()
-    one_year_ago = today - pd.Timedelta(days=365)
+    today = pd.Timestamp.now().normalize()
 
-    parsed = []
-    for p in body.positions:
-        try:
-            dt = pd.Timestamp(p.purchaseDate).normalize()
-        except Exception:
-            dt = one_year_ago
-        parsed.append({"ticker": p.ticker.upper(), "shares": p.shares, "date": dt})
+    all_txns = sorted(body.transactions, key=lambda t: t.date)
+    tickers  = list(set(t.ticker.upper() for t in all_txns))
+    earliest = pd.Timestamp(all_txns[0].date).normalize()
 
-    earliest  = min(p["date"] for p in parsed)
     start_str = earliest.strftime("%Y-%m-%d")
     end_str   = (today + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # Fetch per-ticker using Ticker.history() — consistent across yfinance versions
-    fetch_syms = list(set(p["ticker"] for p in parsed) | {"SPY"})
+    # Live GBPUSD rate so we can convert GBP-priced stocks to USD for a uniform NAV
+    try:
+        gbpusd = float(yf.Ticker("GBPUSD=X").info.get("regularMarketPrice") or 0) or 1.27
+    except Exception:
+        gbpusd = 1.27
+
+    # Native currency for each ticker (from the first buy transaction)
+    ticker_currency: dict[str, str] = {}
+    for t in all_txns:
+        if t.type == "buy":
+            tk = t.ticker.upper()
+            if tk not in ticker_currency:
+                ticker_currency[tk] = (t.currency or "USD").upper()
+
+    fetch_syms = list(set(tickers) | {"SPY"})
     price_cols: dict[str, pd.Series] = {}
     for sym in fetch_syms:
-        try:
-            hist = yf.Ticker(sym).history(start=start_str, end=end_str)
-            if hist.empty:
-                continue
-            idx = hist.index.tz_localize(None) if hist.index.tz is not None else hist.index
-            hist.index = idx
-            price_cols[sym] = hist["Close"].rename(sym)
-        except Exception:
-            pass
+        if sym == "SPY":
+            try:
+                hist = yf.Ticker("SPY").history(start=start_str, end=end_str)
+                if not hist.empty:
+                    idx = hist.index.tz_localize(None) if hist.index.tz is not None else hist.index
+                    hist.index = idx
+                    price_cols["SPY"] = hist["Close"].rename("SPY")
+            except Exception:
+                pass
+            continue
 
-    if not price_cols or not any(p["ticker"] in price_cols for p in parsed):
+        currency = ticker_currency.get(sym, "USD")
+        # GBP stocks are LSE-listed: yfinance needs the ".L" suffix; try that first
+        yf_syms = [sym + ".L", sym] if currency in ("GBP", "GBX") else [sym]
+
+        for yf_sym in yf_syms:
+            try:
+                hist = yf.Ticker(yf_sym).history(start=start_str, end=end_str)
+                if hist.empty:
+                    continue
+                idx = hist.index.tz_localize(None) if hist.index.tz is not None else hist.index
+                hist.index = idx
+                series = hist["Close"].rename(sym)
+                # Normalise to USD so all positions are in the same currency
+                if currency == "GBP":
+                    series = series * gbpusd
+                elif currency == "GBX":
+                    series = series * gbpusd / 100
+                price_cols[sym] = series
+                break
+            except Exception:
+                continue
+
+    if not price_cols or not any(tk in price_cols for tk in tickers):
         raise HTTPException(status_code=422, detail="Could not fetch price history for any position")
 
-    # Align all series onto a common date index, forward-fill gaps
     prices = pd.DataFrame(price_cols).sort_index().ffill().bfill()
 
-    # Build daily portfolio NAV
+    # Build daily NAV with running share counts.
+    # Iterate transactions in order and apply all whose date ≤ current trading date —
+    # this handles weekend/holiday-dated transactions that fall between trading sessions.
+    txn_idx = 0
+    running: dict[str, float] = {}
     nav_rows = []
+
     for date, row in prices.iterrows():
-        value = 0.0
-        for p in parsed:
-            if date < p["date"]:
-                continue
-            px = row.get(p["ticker"])
-            if px is None or pd.isna(px):
-                continue
-            value += p["shares"] * float(px)
+        while txn_idx < len(all_txns):
+            t      = all_txns[txn_idx]
+            t_date = pd.Timestamp(t.date).normalize()
+            if t_date <= date:
+                tk = t.ticker.upper()
+                running.setdefault(tk, 0.0)
+                if t.type == "buy":
+                    running[tk] += t.shares
+                else:
+                    running[tk] = max(0.0, running[tk] - t.shares)
+                txn_idx += 1
+            else:
+                break
+
+        value = sum(
+            running[tk] * float(row[tk])
+            for tk in running
+            if running[tk] > 0 and tk in row and not pd.isna(row[tk])
+        )
         if value > 0:
             nav_rows.append({"date": date, "value": value})
 
     if not nav_rows:
         raise HTTPException(status_code=422, detail="Could not compute portfolio history")
 
-    # Normalise SPY benchmark to portfolio's starting value
     start_value = nav_rows[0]["value"]
     start_date  = nav_rows[0]["date"]
 
@@ -1499,26 +1547,63 @@ def get_portfolio_performance(body: PortfolioRequest):
 
     chart = []
     for n in nav_rows:
-        point: dict = {"date": n["date"].strftime("%Y-%m-%d"), "value": round(n["value"], 2)}
+        idx_val = round((n["value"] / start_value) * 100, 3)
+        point: dict = {
+            "date":     n["date"].strftime("%Y-%m-%d"),
+            "value":    idx_val,
+            "absValue": round(n["value"], 2),
+        }
         if spy_start and spy_series is not None:
             sp = spy_series.get(n["date"])
             if sp is not None and not pd.isna(sp):
-                point["benchmark"] = round(start_value * float(sp) / spy_start, 2)
+                point["benchmark"] = round((float(sp) / spy_start) * 100, 3)
         chart.append(point)
 
-    end_value = chart[-1]["value"]
-    total_ret = (end_value / start_value - 1) * 100
+    # Backend TWRR using every buy transaction date as a sub-period boundary
+    nav_by_date   = {n["date"]: n["value"] for n in nav_rows}
+    all_nav_dates = sorted(nav_by_date.keys())
+
+    def _nav_on_or_after(d):
+        after = [x for x in all_nav_dates if x >= d]
+        return nav_by_date[after[0]] if after else None
+
+    def _nav_before(d):
+        before = [x for x in all_nav_dates if x < d]
+        return nav_by_date[before[-1]] if before else None
+
+    buy_dates = sorted(set(
+        pd.Timestamp(t.date).normalize() for t in all_txns if t.type == "buy"
+    ))
+    sub_returns = []
+    for i, cf in enumerate(buy_dates):
+        next_cf = buy_dates[i + 1] if i + 1 < len(buy_dates) else None
+        s = _nav_on_or_after(cf)
+        e = _nav_before(next_cf) if next_cf else nav_rows[-1]["value"]
+        if s and e and s > 0:
+            sub_returns.append(e / s)
+
+    if sub_returns:
+        twrr = 1.0
+        for r in sub_returns:
+            twrr *= r
+        total_ret = (twrr - 1) * 100
+    else:
+        total_ret = (nav_rows[-1]["value"] / start_value - 1) * 100
 
     bench_ret: float | None = None
-    if len(chart) > 1 and "benchmark" in chart[-1] and "benchmark" in chart[0]:
-        bench_ret = (chart[-1]["benchmark"] / chart[0]["benchmark"] - 1) * 100
+    if spy_start is not None and spy_series is not None:
+        sp_end = spy_series.loc[spy_series.index <= nav_rows[-1]["date"]].dropna()
+        if not sp_end.empty:
+            bench_ret = (float(sp_end.iloc[-1]) / spy_start - 1) * 100
+
+    abs_end = nav_rows[-1]["value"]
 
     return {
         "chart": chart,
         "stats": {
             "startDate":       start_date.strftime("%Y-%m-%d"),
             "startValue":      round(start_value, 2),
-            "currentValue":    round(end_value, 2),
+            "currentValue":    round(abs_end, 2),
             "totalReturn":     round(total_ret, 2),
             "benchmarkReturn": round(bench_ret, 2) if bench_ret is not None else None,
             "alpha":           round(total_ret - bench_ret, 2) if bench_ret is not None else None,
@@ -1527,6 +1612,22 @@ def get_portfolio_performance(body: PortfolioRequest):
 
 
 # ── Portfolio batch-price endpoint ────────────────────────────────────────────
+@app.get("/api/fx/usdgbp")
+def get_fx_usdgbp():
+    """Return live USD → GBP exchange rate using yfinance GBPUSD=X."""
+    try:
+        ticker = yf.Ticker("GBPUSD=X")
+        info   = ticker.info
+        rate   = float(info.get("regularMarketPrice") or info.get("bid") or 0)
+        if not rate:
+            hist = ticker.history(period="1d", interval="1m")
+            rate = float(hist["Close"].iloc[-1]) if not hist.empty else 0.79
+        # GBPUSD=X gives USD per 1 GBP; invert to get GBP per 1 USD
+        return {"usdToGbp": round(1 / rate, 6), "source": "GBPUSD=X"}
+    except Exception as e:
+        return {"usdToGbp": 0.79, "source": "fallback"}
+
+
 @app.get("/api/portfolio/prices")
 def get_portfolio_prices(tickers: str):
     """Return price, daily change, and name for a comma-separated list of tickers."""

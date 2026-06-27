@@ -1,17 +1,19 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
-import { RefreshCw, TrendingUp, TrendingDown } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import {
-  ComposedChart, Area, Line, XAxis, YAxis, Tooltip,
+  ComposedChart, Area, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid,
 } from "recharts";
-import type { Position } from "./PortfolioTracker";
+import type { Position, Transaction } from "./PortfolioTracker";
 
 interface ChartPoint {
   date:       string;
-  value:      number;
+  value:      number;      // indexed: 100 = start (from backend)
+  absValue?:  number;      // absolute portfolio value
   benchmark?: number;
+  plotValue?: number;      // what the chart Area actually renders (absValue)
 }
 
 interface PerfStats {
@@ -49,12 +51,6 @@ function fmtMoney(v: number) {
   return `$${v.toFixed(2)}`;
 }
 
-function fmtAxisMoney(v: number) {
-  if (Math.abs(v) >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
-  if (Math.abs(v) >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
-  return `$${v.toFixed(0)}`;
-}
-
 function StatPill({ label, value, positive, sub }: {
   label: string; value: string; positive?: boolean | null; sub?: string;
 }) {
@@ -72,53 +68,67 @@ function StatPill({ label, value, positive, sub }: {
 }
 
 interface CustomTooltipProps {
-  active?: boolean;
-  payload?: { value: number; dataKey: string; color: string }[];
-  label?: string;
+  active?:    boolean;
+  payload?:   { value: number; dataKey: string; color: string; payload: ChartPoint }[];
+  label?:     string;
+  startValue?: number;
 }
 
-function CustomTooltip({ active, payload, label }: CustomTooltipProps) {
+function CustomTooltip({ active, payload, label, startValue }: CustomTooltipProps) {
   if (!active || !payload?.length) return null;
+  const pt = payload[0]?.payload;
+  const current = pt?.absValue ?? pt?.plotValue ?? 0;
+  const gainPct = startValue && startValue > 0
+    ? ((current - startValue) / startValue) * 100
+    : null;
   return (
     <div className="rounded-xl px-4 py-3 flex flex-col gap-1.5 text-xs"
       style={{ background: "var(--surface2)", border: "1px solid var(--border)", boxShadow: "0 4px 20px rgba(0,0,0,0.3)" }}>
       <div className="font-semibold mb-1" style={{ color: "var(--muted2)" }}>{label}</div>
-      {payload.map(p => (
-        <div key={p.dataKey} className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full" style={{ background: p.color }} />
-          <span style={{ color: "var(--muted)" }}>
-            {p.dataKey === "value" ? "Portfolio" : "SPY"}
-          </span>
-          <span className="ml-auto font-semibold tabular-nums" style={{ color: "var(--text)" }}>
-            {fmtMoney(p.value)}
-          </span>
+      <div className="flex items-center gap-2">
+        <span className="w-2 h-2 rounded-full" style={{ background: "#3b82f6" }} />
+        <span style={{ color: "var(--muted)" }}>Portfolio</span>
+        <span className="ml-auto font-semibold tabular-nums" style={{ color: "var(--text)" }}>
+          {fmtMoney(current)}
+        </span>
+      </div>
+      {gainPct != null && (
+        <div className="text-[11px]" style={{ color: gainPct >= 0 ? "#22c55e" : "#ef4444" }}>
+          {gainPct >= 0 ? "+" : ""}{gainPct.toFixed(2)}% from period start
         </div>
-      ))}
+      )}
     </div>
   );
 }
 
-export default function PortfolioPerformance({ positions }: { positions: Position[] }) {
+export default function PortfolioPerformance({ positions, transactions, netDeposits, usdToGbp = 0.79 }: {
+  positions:    Position[];
+  transactions: Transaction[];
+  netDeposits?: number | null;
+  usdToGbp?:   number;
+}) {
   const [data,    setData]    = useState<PerfData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState<string | null>(null);
   const [period,  setPeriod]  = useState<Period>("All");
 
-  const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000)
-    .toISOString().split("T")[0];
-
   async function load() {
-    if (!positions.length) return;
+    if (!transactions.length) return;
     setLoading(true); setError(null);
     try {
       const res = await fetch("http://localhost:8000/api/portfolio/performance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ positions: positions.map(p => ({
-          ticker:       p.ticker,
-          shares:       p.shares,
-          purchaseDate: p.purchaseDate || oneYearAgo,
-        })) }),
+        body: JSON.stringify({
+          transactions: transactions.map(t => ({
+            ticker:   t.ticker,
+            date:     t.date,
+            shares:   t.shares,
+            price:    t.price,
+            currency: t.currency ?? "USD",
+            type:     t.type,
+          })),
+        }),
       });
       if (!res.ok) { const j = await res.json(); throw new Error(j.detail || "Failed"); }
       setData(await res.json());
@@ -127,34 +137,91 @@ export default function PortfolioPerformance({ positions }: { positions: Positio
     } finally { setLoading(false); }
   }
 
-  const posKey = positions.map(p => `${p.ticker}:${p.shares}:${p.purchaseDate ?? ""}`).join(",");
+  const posKey = transactions.map(t => t.id).join(",");
   useEffect(() => { setData(null); setError(null); }, [posKey]);
   useEffect(() => { load(); }, [posKey]);
 
-  // Filter chart data for selected period
+  // Filter chart data for selected period; expose absValue as the plotted value
   const filtered = useMemo(() => {
     if (!data) return [];
     const cutoff = cutoffDate(period);
-    if (!cutoff) return data.chart;
-    return data.chart.filter(d => new Date(d.date) >= cutoff);
+    const pts = cutoff
+      ? data.chart.filter(d => new Date(d.date) >= cutoff)
+      : data.chart;
+    // Use absolute portfolio value for the chart line
+    return pts.map(p => ({ ...p, plotValue: p.absValue ?? p.value }));
   }, [data, period]);
 
-  // Recompute stats for the filtered period
+  // TWRR for any period: split at each new position purchase, chain sub-period returns
   const periodStats = useMemo(() => {
-    if (!filtered.length || !data) return data?.stats ?? null;
-    const first = filtered[0];
-    const last  = filtered[filtered.length - 1];
-    const ret   = (last.value / first.value - 1) * 100;
-    const bRet  = (first.benchmark != null && last.benchmark != null)
-      ? (last.benchmark / first.benchmark - 1) * 100
-      : null;
+    if (!data) return null;
+
+    if (period === "All") {
+      const currentValueUsd = data.chart[data.chart.length - 1]?.absValue ?? 0;
+      let simpleReturn: number;
+      if (netDeposits && netDeposits > 0) {
+        // Compare portfolio value in GBP against actual GBP deposits
+        const currentValueGbp = currentValueUsd * usdToGbp;
+        simpleReturn = ((currentValueGbp - netDeposits) / netDeposits) * 100;
+      } else {
+        const totalCost = positions.reduce((sum, p) => sum + p.shares * p.avgCost, 0);
+        simpleReturn = totalCost > 0 ? ((currentValueUsd - totalCost) / totalCost) * 100 : 0;
+      }
+      return {
+        ...data.stats,
+        totalReturn:     parseFloat(simpleReturn.toFixed(2)),
+        benchmarkReturn: null,
+        alpha:           null,
+      };
+    }
+
+    const cutoff = cutoffDate(period)!;
+    const raw = data.chart.filter(d => new Date(d.date) >= cutoff);
+    if (raw.length < 2) return data.stats;
+
+    const first = raw[0];
+    const last  = raw[raw.length - 1];
+
+    const navMap: Record<string, number> = {};
+    for (const p of raw) { if (p.absValue != null) navMap[p.date] = p.absValue; }
+    const sortedDates = Object.keys(navMap).sort();
+
+    // Every buy transaction within this period is a cash injection boundary
+    const cfDates = [...new Set(
+      transactions
+        .filter(t => t.type === "buy" && t.date > first.date && t.date <= last.date)
+        .map(t => t.date)
+    )].sort();
+
+    if (!cfDates.length) {
+      // No new capital — simple (end − start) / start
+      const firstAbs = first.absValue ?? first.value;
+      const lastAbs  = last.absValue  ?? last.value;
+      const ret      = firstAbs > 0 ? ((lastAbs - firstAbs) / firstAbs) * 100 : 0;
+      return { ...data.stats, startDate: first.date, totalReturn: parseFloat(ret.toFixed(2)), benchmarkReturn: null, alpha: null };
+    }
+
+    // TWRR: split at each cash injection, chain sub-period returns
+    const navOnOrAfter = (d: string) => { const x = sortedDates.find(s => s >= d); return x ? navMap[x] : null; };
+    const navBefore    = (d: string) => { const x = [...sortedDates].reverse().find(s => s < d); return x ? navMap[x] : null; };
+
+    const boundaries = [first.date, ...cfDates];
+    let twrr = 1;
+    for (let i = 0; i < boundaries.length; i++) {
+      const s = navOnOrAfter(boundaries[i]);
+      const e = boundaries[i + 1] ? navBefore(boundaries[i + 1]) : navMap[sortedDates[sortedDates.length - 1]];
+      if (s && e && s > 0) twrr *= e / s;
+    }
+    const ret = (twrr - 1) * 100;
+
     return {
       ...data.stats,
+      startDate:       first.date,
       totalReturn:     parseFloat(ret.toFixed(2)),
-      benchmarkReturn: bRet != null ? parseFloat(bRet.toFixed(2)) : null,
-      alpha:           bRet != null ? parseFloat((ret - bRet).toFixed(2)) : null,
+      benchmarkReturn: null,
+      alpha:           null,
     };
-  }, [filtered, data]);
+  }, [data, period, positions, transactions, netDeposits, usdToGbp]);
 
   // X-axis tick sampling
   const xTicks = useMemo(() => {
@@ -165,7 +232,7 @@ export default function PortfolioPerformance({ positions }: { positions: Positio
     return filtered.filter((_, i) => i % step === 0 || i === n - 1).map(d => d.date);
   }, [filtered]);
 
-  if (!positions.length) return null;
+  if (!transactions.length) return null;
 
   return (
     <div className="rounded-xl overflow-hidden"
@@ -180,7 +247,7 @@ export default function PortfolioPerformance({ positions }: { positions: Positio
           </div>
           {periodStats && (
             <div className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>
-              Since {periodStats.startDate} · vs SPY benchmark
+              Since {periodStats.startDate}
             </div>
           )}
         </div>
@@ -214,31 +281,10 @@ export default function PortfolioPerformance({ positions }: { positions: Positio
             label="Portfolio Return"
             value={`${periodStats.totalReturn >= 0 ? "+" : ""}${periodStats.totalReturn.toFixed(2)}%`}
             positive={periodStats.totalReturn >= 0}
-            sub={fmtMoney(filtered[filtered.length - 1]?.value ?? 0)}
+            sub={fmtMoney(filtered[filtered.length - 1]?.absValue ?? 0)}
           />
-          {periodStats.benchmarkReturn != null && (
-            <StatPill
-              label="SPY Return"
-              value={`${periodStats.benchmarkReturn >= 0 ? "+" : ""}${periodStats.benchmarkReturn.toFixed(2)}%`}
-              positive={periodStats.benchmarkReturn >= 0}
-              sub="benchmark"
-            />
-          )}
-          {periodStats.alpha != null && (
-            <StatPill
-              label="Alpha"
-              value={`${periodStats.alpha >= 0 ? "+" : ""}${periodStats.alpha.toFixed(2)}%`}
-              positive={periodStats.alpha >= 0}
-              sub={periodStats.alpha >= 0 ? "outperforming" : "underperforming"}
-            />
-          )}
-          <div className="flex items-center gap-4 ml-auto text-[11px]">
-            <span className="flex items-center gap-1.5" style={{ color: "var(--muted)" }}>
-              <span className="w-3 h-0.5 rounded" style={{ background: "#3b82f6" }} /> Portfolio
-            </span>
-            <span className="flex items-center gap-1.5" style={{ color: "var(--muted)" }}>
-              <span className="w-3 border-t border-dashed" style={{ borderColor: "#6b7280" }} /> SPY
-            </span>
+          <div className="flex items-center gap-1.5 ml-auto text-[11px]" style={{ color: "var(--muted)" }}>
+            <span className="w-3 h-0.5 rounded" style={{ background: "#3b82f6" }} /> Portfolio
           </div>
         </div>
       )}
@@ -261,52 +307,52 @@ export default function PortfolioPerformance({ positions }: { positions: Positio
           </div>
         )}
 
-        {!loading && !error && filtered.length > 0 && (
-          <ResponsiveContainer width="100%" height={220}>
-            <ComposedChart data={filtered} margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
-              <defs>
-                <linearGradient id="portfolioGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%"  stopColor="#3b82f6" stopOpacity={0.25} />
-                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0.02} />
-                </linearGradient>
-              </defs>
+        {!loading && !error && filtered.length > 0 && (() => {
+          const startValue = filtered[0]?.absValue ?? filtered[0]?.plotValue ?? 0;
+          return (
+            <ResponsiveContainer width="100%" height={220}>
+              <ComposedChart data={filtered} margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="portfolioGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%"  stopColor="#3b82f6" stopOpacity={0.25} />
+                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
 
-              <CartesianGrid vertical={false} stroke="var(--border)" strokeOpacity={0.5} />
+                <CartesianGrid vertical={false} stroke="var(--border)" strokeOpacity={0.5} />
 
-              <XAxis dataKey="date" ticks={xTicks}
-                tick={{ fill: "var(--muted)", fontSize: 10 }}
-                axisLine={false} tickLine={false}
-                tickFormatter={d => {
-                  const dt = new Date(d);
-                  return dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-                }}
-              />
+                <XAxis dataKey="date" ticks={xTicks}
+                  tick={{ fill: "var(--muted)", fontSize: 10 }}
+                  axisLine={false} tickLine={false}
+                  tickFormatter={d => {
+                    const dt = new Date(d);
+                    return dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+                  }}
+                />
 
-              <YAxis
-                tick={{ fill: "var(--muted)", fontSize: 10 }}
-                axisLine={false} tickLine={false} width={56}
-                tickFormatter={fmtAxisMoney}
-              />
+                <YAxis
+                  tick={{ fill: "var(--muted)", fontSize: 10 }}
+                  axisLine={false} tickLine={false} width={56}
+                  tickFormatter={v => {
+                    if (Math.abs(v) >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
+                    if (Math.abs(v) >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
+                    return `$${v.toFixed(0)}`;
+                  }}
+                />
 
-              <Tooltip content={<CustomTooltip />} />
+                <Tooltip content={<CustomTooltip startValue={startValue} />} />
 
-              {/* SPY benchmark — dashed line behind portfolio */}
-              <Line
-                type="monotone" dataKey="benchmark"
-                stroke="#6b7280" strokeWidth={1.5}
-                strokeDasharray="4 3" dot={false} activeDot={false}
-              />
-
-              {/* Portfolio — filled area */}
-              <Area
-                type="monotone" dataKey="value"
-                stroke="#3b82f6" strokeWidth={2}
-                fill="url(#portfolioGrad)" dot={false}
-                activeDot={{ r: 4, fill: "#3b82f6", stroke: "var(--surface)", strokeWidth: 2 }}
-              />
-            </ComposedChart>
-          </ResponsiveContainer>
-        )}
+                {/* Portfolio — filled area */}
+                <Area
+                  type="monotone" dataKey="plotValue"
+                  stroke="#3b82f6" strokeWidth={2}
+                  fill="url(#portfolioGrad)" dot={false}
+                  activeDot={{ r: 4, fill: "#3b82f6", stroke: "var(--surface)", strokeWidth: 2 }}
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          );
+        })()}
       </div>
     </div>
   );

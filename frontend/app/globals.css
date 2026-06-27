@@ -2,12 +2,12 @@
 
 /* ── Dark theme (default) ── */
 :root, [data-theme="dark"] {
-  --background: #08080e;
-  --surface:    #0d0d16;
-  --surface2:   #13131e;
-  --surface3:   #1a1a28;
-  --border:     #20202e;
-  --border2:    #2a2a3e;
+  --background: #000000;
+  --surface:    #0a0a0a;
+  --surface2:   #111111;
+  --surface3:   #1a1a1a;
+  --border:     #222222;
+  --border2:    #2e2e2e;
   --text:       #eaeaf4;
   --muted:      #60607a;
   --muted2:     #8888a8;

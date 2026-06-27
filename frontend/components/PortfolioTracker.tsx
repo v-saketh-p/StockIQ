@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import {
-  TrendingUp, TrendingDown, Plus, Trash2, RefreshCw, X, Check,
+  TrendingUp, TrendingDown, Plus, Trash2, RefreshCw, X, Check, Upload,
 } from "lucide-react";
 import PortfolioPerformance from "./PortfolioPerformance";
 
@@ -10,7 +10,17 @@ export interface Position {
   ticker:       string;
   shares:       number;
   avgCost:      number;
-  purchaseDate?: string;  // "YYYY-MM-DD"
+  purchaseDate?: string;  // earliest buy date
+}
+
+export interface Transaction {
+  id:       string;   // stable dedup key
+  ticker:   string;
+  date:     string;   // YYYY-MM-DD
+  shares:   number;
+  price:    number;   // per share in native currency
+  currency: string;   // "USD", "GBP", "GBX", …
+  type:     "buy" | "sell";
 }
 
 interface LivePrice {
@@ -26,12 +36,12 @@ interface Props {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function fmtMoney(v: number) {
+function fmtMoney(v: number, sym = "$") {
   const abs = Math.abs(v);
-  if (abs >= 1e9) return `$${(v / 1e9).toFixed(2)}B`;
-  if (abs >= 1e6) return `$${(v / 1e6).toFixed(2)}M`;
-  if (abs >= 1e3) return `$${(v / 1e3).toFixed(1)}K`;
-  return `$${v.toFixed(2)}`;
+  if (abs >= 1e9) return `${sym}${(v / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${sym}${(v / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${sym}${(v / 1e3).toFixed(1)}K`;
+  return `${sym}${v.toFixed(2)}`;
 }
 
 function pctColor(v: number) {
@@ -154,31 +164,150 @@ function AddForm({ onAdd, onCancel }: {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
+function parseCSVRow(line: string): string[] {
+  const fields: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  for (const ch of line) {
+    if (ch === '"') { inQuotes = !inQuotes; }
+    else if (ch === ',' && !inQuotes) { fields.push(current); current = ""; }
+    else { current += ch; }
+  }
+  fields.push(current);
+  return fields;
+}
+
+function parseT212CSV(text: string): Transaction[] {
+  const lines = text.split("\n").filter(l => l.trim());
+  if (!lines.length) return [];
+
+  const headers = parseCSVRow(lines[0]).map(h => h.replace(/^"|"$/g, "").trim());
+  const col = (row: string[], name: string) => {
+    const i = headers.indexOf(name);
+    return i >= 0 ? (row[i] ?? "").replace(/^"|"$/g, "").trim() : "";
+  };
+
+  const txns: Transaction[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const row    = parseCSVRow(lines[i]);
+    const action = col(row, "Action");
+    const ticker = col(row, "Ticker");
+    if (!ticker) continue;
+
+    const isBuy  = /buy/i.test(action);
+    const isSell = /sell/i.test(action);
+    if (!isBuy && !isSell) continue;
+
+    const shares   = parseFloat(col(row, "No. of shares").replace(/,/g, "")) || 0;
+    const price    = parseFloat(col(row, "Price / share").replace(/,/g, "")) || 0;
+    const date     = col(row, "Time").slice(0, 10);
+    const currency = col(row, "Currency (Price / share)") || "USD";
+    // Use T212's own transaction ID when available — best dedup key
+    const t212id   = col(row, "ID");
+    if (!shares || !price || !date) continue;
+
+    const id = t212id || `${ticker}-${date}-${shares.toFixed(6)}-${price.toFixed(4)}`;
+    txns.push({ id, ticker, date, shares, price, currency, type: isBuy ? "buy" : "sell" });
+  }
+  return txns;
+}
+
+function derivePositions(txns: Transaction[]): Position[] {
+  const acc: Record<string, { shares: number; costUsd: number; firstDate: string | null }> = {};
+  for (const t of [...txns].sort((a, b) => a.date.localeCompare(b.date))) {
+    if (!acc[t.ticker]) acc[t.ticker] = { shares: 0, costUsd: 0, firstDate: null };
+    if (t.type === "buy") {
+      acc[t.ticker].shares  += t.shares;
+      acc[t.ticker].costUsd += t.shares * t.price;
+      if (!acc[t.ticker].firstDate) acc[t.ticker].firstDate = t.date;
+    } else {
+      const frac = acc[t.ticker].shares > 0 ? t.shares / acc[t.ticker].shares : 0;
+      acc[t.ticker].shares  -= t.shares;
+      acc[t.ticker].costUsd -= acc[t.ticker].costUsd * frac;
+    }
+  }
+  return Object.entries(acc)
+    .filter(([, p]) => p.shares > 0.0001)
+    .map(([ticker, p]) => ({
+      ticker,
+      shares:       parseFloat(p.shares.toFixed(6)),
+      avgCost:      parseFloat((p.costUsd / p.shares).toFixed(4)),
+      purchaseDate: p.firstDate ?? undefined,
+    }));
+}
+
 export default function PortfolioTracker({ onSelectTicker }: Props) {
-  const [positions, setPositions] = useState<Position[]>([]);
-  const [prices,    setPrices]    = useState<Record<string, LivePrice>>({});
-  const [loading,   setLoading]   = useState(false);
-  const [showForm,  setShowForm]  = useState(false);
-  const [confirmDel, setConfirmDel] = useState<string | null>(null);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [prices,       setPrices]       = useState<Record<string, LivePrice>>({});
+  const [loading,      setLoading]      = useState(false);
+  const [showForm,     setShowForm]     = useState(false);
+  const [confirmDel,   setConfirmDel]   = useState<string | null>(null);
+  const [importMsg,    setImportMsg]    = useState<string | null>(null);
+  const [currency,     setCurrency]     = useState<"USD" | "GBP">("USD");
+  const [usdToGbp,     setUsdToGbp]     = useState(0.79);
+  const [sortBy,       setSortBy]       = useState<"value" | "pnlPct" | "todayPct">("value");
+  const [sortDir,      setSortDir]      = useState<"desc" | "asc">("desc");
+  const fileRef = useRef<HTMLInputElement>(null);
 
-  // Track whether we've finished the initial load so we don't overwrite
-  // localStorage with the empty initial state before the load effect runs.
-  const didLoad = useRef(false);
+  const [isLoaded,        setIsLoaded]        = useState(false);
+  const [netDeposits,     setNetDeposits]     = useState<number | null>(2805.60);
+  const [depositsInput,   setDepositsInput]   = useState("");
+  const [editingDeposits, setEditingDeposits] = useState(false);
 
-  // Load persisted positions on mount
+  // Derive positions from transactions (for display, price fetching, backend calls)
+  const positions = useMemo(() => derivePositions(transactions), [transactions]);
+
+  // Load persisted state on mount; migrate old positions format if needed
   useEffect(() => {
     try {
-      const saved = localStorage.getItem("portfolio_positions");
-      if (saved) setPositions(JSON.parse(saved));
+      const savedTxns = localStorage.getItem("portfolio_transactions");
+      if (savedTxns) {
+        setTransactions(JSON.parse(savedTxns));
+      } else {
+        // Migrate from old single-position-per-ticker format
+        const oldPos = localStorage.getItem("portfolio_positions");
+        if (oldPos) {
+          const parsed: Position[] = JSON.parse(oldPos);
+          setTransactions(parsed.map(p => ({
+            id:       `${p.ticker}-${p.purchaseDate ?? "2025-01-01"}-legacy`,
+            ticker:   p.ticker,
+            date:     p.purchaseDate ?? "2025-01-01",
+            shares:   p.shares,
+            price:    p.avgCost,
+            currency: "USD",
+            type:     "buy" as const,
+          })));
+        }
+      }
+      const savedDeps = localStorage.getItem("portfolio_net_deposits");
+      if (savedDeps) setNetDeposits(parseFloat(savedDeps));
     } catch {}
-    didLoad.current = true;
+    setIsLoaded(true);
   }, []);
 
-  // Save whenever positions change — but only after the initial load
   useEffect(() => {
-    if (!didLoad.current) return;
-    localStorage.setItem("portfolio_positions", JSON.stringify(positions));
-  }, [positions]);
+    if (!isLoaded) return;
+    localStorage.setItem("portfolio_transactions", JSON.stringify(transactions));
+  }, [transactions, isLoaded]);
+
+  useEffect(() => {
+    if (!isLoaded) return;
+    if (netDeposits != null) localStorage.setItem("portfolio_net_deposits", String(netDeposits));
+  }, [netDeposits, isLoaded]);
+
+  // Fetch live USD→GBP rate, refresh every 60 seconds
+  useEffect(() => {
+    async function fetchFx() {
+      try {
+        const res  = await fetch("http://localhost:8000/api/fx/usdgbp");
+        const json = await res.json();
+        if (json.usdToGbp) setUsdToGbp(json.usdToGbp);
+      } catch {}
+    }
+    fetchFx();
+    const id = setInterval(fetchFx, 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   async function fetchPrices(pos: Position[]) {
     if (!pos.length) { setPrices({}); return; }
@@ -194,30 +323,42 @@ export default function PortfolioTracker({ onSelectTicker }: Props) {
 
   useEffect(() => { fetchPrices(positions); }, [positions]);
 
-  function addPosition(ticker: string, shares: number, avgCost: number, purchaseDate: string) {
-    setPositions(prev => {
-      const existing = prev.find(p => p.ticker === ticker);
-      if (existing) {
-        const totalShares = existing.shares + shares;
-        const newAvg = (existing.shares * existing.avgCost + shares * avgCost) / totalShares;
-        // Keep the earlier purchase date
-        const earlierDate = existing.purchaseDate && existing.purchaseDate < purchaseDate
-          ? existing.purchaseDate : purchaseDate;
-        return prev.map(p =>
-          p.ticker === ticker
-            ? { ...p, shares: totalShares, avgCost: parseFloat(newAvg.toFixed(4)), purchaseDate: earlierDate }
-            : p
-        );
-      }
-      return [...prev, { ticker, shares, avgCost, purchaseDate }];
-    });
+  function addPosition(ticker: string, shares: number, avgCost: number, date: string) {
+    const id = `${ticker}-${date}-${shares.toFixed(6)}-${avgCost.toFixed(4)}`;
+    setTransactions(prev => [...prev, { id, ticker, date, shares, price: avgCost, currency: "USD", type: "buy" }]);
     setShowForm(false);
   }
 
   function removePosition(ticker: string) {
-    setPositions(prev => prev.filter(p => p.ticker !== ticker));
+    setTransactions(prev => prev.filter(t => t.ticker !== ticker));
     setConfirmDel(null);
   }
+
+  function handleImport(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string;
+      const imported = parseT212CSV(text);
+      if (!imported.length) { setImportMsg("No transactions found in CSV."); return; }
+      setTransactions(prev => {
+        const existingIds = new Set(prev.map(t => t.id));
+        const newTxns = imported.filter(t => !existingIds.has(t.id));
+        return [...prev, ...newTxns];
+      });
+      const tickers = new Set(imported.map(t => t.ticker));
+      setImportMsg(`Imported ${imported.length} transactions across ${tickers.size} tickers`);
+      setTimeout(() => setImportMsg(null), 4000);
+    };
+    reader.readAsText(file);
+  }
+
+  // ── Currency helpers ────────────────────────────────────────────────────
+  const sym  = currency === "GBP" ? "£" : "$";
+  const conv = (usd: number) => currency === "GBP" ? usd * usdToGbp : usd;
+  const fmt  = (usd: number) => fmtMoney(conv(usd), sym);
 
   // ── Portfolio maths ──────────────────────────────────────────────────────
   const rows = positions.map(p => {
@@ -232,10 +373,39 @@ export default function PortfolioTracker({ onSelectTicker }: Props) {
 
   const totalValue    = rows.reduce((s, r) => s + (r.mktValue ?? 0), 0);
   const totalCost     = rows.reduce((s, r) => s + r.costBasis, 0);
-  const totalPnl      = totalValue - totalCost;
-  const totalPnlPct   = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
   const todayTotal    = rows.reduce((s, r) => s + (r.todayPnl ?? 0), 0);
   const todayPct      = totalValue > 0 ? (todayTotal / (totalValue - todayTotal)) * 100 : 0;
+
+  // P&L vs net deposits (converted to USD for consistent arithmetic with totalValue)
+  const netDepositsUsd = netDeposits != null && usdToGbp > 0 ? netDeposits / usdToGbp : null;
+  const totalPnl    = netDepositsUsd != null ? totalValue - netDepositsUsd : totalValue - totalCost;
+  const totalPnlPct = netDepositsUsd != null && netDepositsUsd > 0
+    ? (totalPnl / netDepositsUsd) * 100
+    : totalCost > 0 ? ((totalValue - totalCost) / totalCost) * 100 : 0;
+
+  const sortedRows = [...rows].sort((a, b) => {
+    let av = 0, bv = 0;
+    if (sortBy === "value")    { av = a.mktValue ?? 0;          bv = b.mktValue ?? 0; }
+    if (sortBy === "pnlPct")   { av = a.pnlPct ?? -Infinity;    bv = b.pnlPct ?? -Infinity; }
+    if (sortBy === "todayPct") { av = a.live?.changePct ?? -Infinity; bv = b.live?.changePct ?? -Infinity; }
+    return sortDir === "desc" ? bv - av : av - bv;
+  });
+
+  function heatmapBg(changePct: number | undefined) {
+    if (changePct == null) return "rgba(100,100,120,0.12)";
+    const intensity = Math.min(Math.abs(changePct) / 4, 1);
+    const alpha = 0.18 + intensity * 0.65;
+    return changePct > 0
+      ? `rgba(22,163,74,${alpha.toFixed(2)})`
+      : changePct < 0
+      ? `rgba(220,38,38,${alpha.toFixed(2)})`
+      : "rgba(100,100,120,0.12)";
+  }
+
+  function toggleSort(key: typeof sortBy) {
+    if (sortBy === key) setSortDir(d => d === "desc" ? "asc" : "desc");
+    else { setSortBy(key); setSortDir("desc"); }
+  }
 
   return (
     <div className="flex flex-col gap-5">
@@ -248,11 +418,44 @@ export default function PortfolioTracker({ onSelectTicker }: Props) {
             {positions.length} position{positions.length !== 1 ? "s" : ""} · live prices via yfinance
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
           <button onClick={() => fetchPrices(positions)} disabled={loading}
             className="w-8 h-8 flex items-center justify-center rounded-lg transition-all hover:opacity-80 disabled:opacity-40"
             style={{ background: "var(--surface2)", border: "1px solid var(--border2)", color: "var(--muted2)" }}>
             <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
+          </button>
+
+          {/* Currency toggle */}
+          <div className="flex rounded-lg overflow-hidden text-xs font-semibold"
+            style={{ border: "1px solid var(--border2)" }}>
+            {(["USD", "GBP"] as const).map(c => (
+              <button key={c} onClick={() => setCurrency(c)}
+                className="px-3 py-1.5 transition-all"
+                style={{
+                  background: currency === c ? "linear-gradient(135deg,#3b82f6,#6366f1)" : "var(--surface2)",
+                  color:      currency === c ? "#fff" : "var(--muted2)",
+                }}>
+                {c === "USD" ? "$ USD" : "£ GBP"}
+              </button>
+            ))}
+          </div>
+          <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleImport} />
+          {transactions.length > 0 && (
+            <button
+              onClick={() => {
+                setTransactions([]);
+                setImportMsg("Portfolio cleared — ready to import.");
+                setTimeout(() => setImportMsg(null), 3000);
+              }}
+              className="flex items-center gap-1.5 text-xs px-3.5 py-2 rounded-lg font-semibold transition-all hover:opacity-85"
+              style={{ background: "var(--surface2)", border: "1px solid rgba(239,68,68,0.4)", color: "var(--red)" }}>
+              <Trash2 size={13} /> Clear All
+            </button>
+          )}
+          <button onClick={() => fileRef.current?.click()}
+            className="flex items-center gap-1.5 text-xs px-3.5 py-2 rounded-lg font-semibold transition-all hover:opacity-85"
+            style={{ background: "var(--surface2)", border: "1px solid var(--border2)", color: "var(--muted2)" }}>
+            <Upload size={13} /> Import CSV
           </button>
           <button onClick={() => setShowForm(v => !v)}
             className="flex items-center gap-1.5 text-xs px-3.5 py-2 rounded-lg font-semibold transition-all hover:opacity-85"
@@ -261,6 +464,14 @@ export default function PortfolioTracker({ onSelectTicker }: Props) {
           </button>
         </div>
       </div>
+
+      {/* ── Import banner ── */}
+      {importMsg && (
+        <div className="text-xs rounded-xl px-4 py-3 flex items-center gap-2"
+          style={{ background: "rgba(34,197,94,0.08)", color: "#22c55e", border: "1px solid rgba(34,197,94,0.2)" }}>
+          <Check size={13} /> {importMsg}
+        </div>
+      )}
 
       {/* ── Add form ── */}
       {showForm && (
@@ -272,24 +483,64 @@ export default function PortfolioTracker({ onSelectTicker }: Props) {
         <div className="grid grid-cols-4 gap-3">
           <SummaryCard
             label="Portfolio Value"
-            value={fmtMoney(totalValue)}
+            value={fmt(totalValue)}
             sub={`${positions.length} position${positions.length !== 1 ? "s" : ""}`}
             positive={null}
           />
-          <SummaryCard
-            label="Total Invested"
-            value={fmtMoney(totalCost)}
-            positive={null}
-          />
+          {/* Net Deposits — editable */}
+          <div className="rounded-xl px-5 py-4 flex flex-col gap-1.5"
+            style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="flex items-center justify-between">
+              <span className="text-xs uppercase tracking-widest font-semibold" style={{ color: "var(--muted)" }}>
+                Net Deposits
+              </span>
+              {!editingDeposits && (
+                <button onClick={() => { setDepositsInput((netDeposits ?? 0).toFixed(2)); setEditingDeposits(true); }}
+                  className="text-[11px] px-2 py-0.5 rounded transition-all hover:opacity-80"
+                  style={{ color: "var(--muted2)", background: "var(--surface2)", border: "1px solid var(--border2)" }}>
+                  edit
+                </button>
+              )}
+            </div>
+            {editingDeposits ? (
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-lg font-bold" style={{ color: "var(--muted2)" }}>£</span>
+                <input
+                  type="number" step="0.01" value={depositsInput}
+                  onChange={e => setDepositsInput(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter") { const v = parseFloat(depositsInput); if (!isNaN(v) && v > 0) { setNetDeposits(v); setEditingDeposits(false); } }
+                    if (e.key === "Escape") setEditingDeposits(false);
+                  }}
+                  autoFocus
+                  className="text-xl font-extrabold tabular-nums outline-none w-full rounded-lg px-2 py-1"
+                  style={{ background: "var(--surface2)", border: "1px solid var(--border2)", color: "var(--text)" }}
+                />
+                <button onClick={() => { const v = parseFloat(depositsInput); if (!isNaN(v) && v > 0) { setNetDeposits(v); setEditingDeposits(false); } }}>
+                  <Check size={15} style={{ color: "#22c55e" }} />
+                </button>
+                <button onClick={() => setEditingDeposits(false)}>
+                  <X size={15} style={{ color: "var(--muted2)" }} />
+                </button>
+              </div>
+            ) : (
+              <div className="text-2xl font-extrabold tabular-nums" style={{ color: "var(--text)" }}>
+                {netDeposits != null ? `£${netDeposits.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+              </div>
+            )}
+            {!editingDeposits && (
+              <div className="text-xs" style={{ color: "var(--muted)" }}>GBP deposited</div>
+            )}
+          </div>
           <SummaryCard
             label="Total P&L"
-            value={`${totalPnl >= 0 ? "+" : ""}${fmtMoney(totalPnl)}`}
+            value={`${totalPnl >= 0 ? "+" : ""}${fmt(totalPnl)}`}
             sub={`${totalPnlPct >= 0 ? "+" : ""}${totalPnlPct.toFixed(2)}% all time`}
             positive={totalPnl >= 0}
           />
           <SummaryCard
             label="Today's P&L"
-            value={`${todayTotal >= 0 ? "+" : ""}${fmtMoney(todayTotal)}`}
+            value={`${todayTotal >= 0 ? "+" : ""}${fmt(todayTotal)}`}
             sub={`${todayPct >= 0 ? "+" : ""}${todayPct.toFixed(2)}% today`}
             positive={todayTotal >= 0}
           />
@@ -310,17 +561,24 @@ export default function PortfolioTracker({ onSelectTicker }: Props) {
               Add a position to start tracking your portfolio
             </div>
           </div>
-          <button onClick={() => setShowForm(true)}
-            className="flex items-center gap-1.5 text-xs px-4 py-2.5 rounded-xl font-semibold transition-all hover:opacity-85"
-            style={{ background: "linear-gradient(135deg,#3b82f6,#6366f1)", color: "#fff" }}>
-            <Plus size={13} /> Add your first position
-          </button>
+          <div className="flex gap-2">
+            <button onClick={() => fileRef.current?.click()}
+              className="flex items-center gap-1.5 text-xs px-4 py-2.5 rounded-xl font-semibold transition-all hover:opacity-85"
+              style={{ background: "var(--surface2)", border: "1px solid var(--border2)", color: "var(--muted2)" }}>
+              <Upload size={13} /> Import CSV
+            </button>
+            <button onClick={() => setShowForm(true)}
+              className="flex items-center gap-1.5 text-xs px-4 py-2.5 rounded-xl font-semibold transition-all hover:opacity-85"
+              style={{ background: "linear-gradient(135deg,#3b82f6,#6366f1)", color: "#fff" }}>
+              <Plus size={13} /> Add manually
+            </button>
+          </div>
         </div>
       )}
 
       {/* ── Performance chart ── */}
       {positions.length > 0 && (
-        <PortfolioPerformance positions={positions} />
+        <PortfolioPerformance positions={positions} transactions={transactions} netDeposits={netDeposits} usdToGbp={usdToGbp} />
       )}
 
       {/* ── Holdings table ── */}
@@ -328,9 +586,11 @@ export default function PortfolioTracker({ onSelectTicker }: Props) {
         <div className="rounded-xl overflow-hidden"
           style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
 
-          {/* Allocation bar */}
+          {/* Allocation bar + heatmap */}
           {totalValue > 0 && (
-            <div className="px-5 pt-4 pb-2">
+            <div className="px-5 pt-4 pb-4">
+
+              {/* Bar */}
               <div className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "var(--muted)" }}>
                 Allocation
               </div>
@@ -347,7 +607,7 @@ export default function PortfolioTracker({ onSelectTicker }: Props) {
                     );
                   })}
               </div>
-              <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+              <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 mb-4">
                 {rows
                   .filter(r => r.mktValue != null)
                   .sort((a, b) => (b.mktValue ?? 0) - (a.mktValue ?? 0))
@@ -363,10 +623,74 @@ export default function PortfolioTracker({ onSelectTicker }: Props) {
                     );
                   })}
               </div>
+
+              {/* Heatmap tiles */}
+              <div className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: "var(--muted)" }}>
+                Today&apos;s Performance
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {rows
+                  .filter(r => r.mktValue != null && r.mktValue > 0)
+                  .sort((a, b) => (b.mktValue ?? 0) - (a.mktValue ?? 0))
+                  .map(r => {
+                    const weight   = (r.mktValue ?? 0) / totalValue;
+                    const chg      = r.live?.changePct;
+                    const isPos    = chg != null && chg > 0;
+                    const isNeg    = chg != null && chg < 0;
+                    const tileColor = isPos ? "#4ade80" : isNeg ? "#f87171" : "var(--muted)";
+                    return (
+                      <button key={r.ticker}
+                        onClick={() => onSelectTicker(r.ticker)}
+                        className="flex flex-col items-center justify-center rounded-xl transition-all hover:scale-[1.03] hover:brightness-110"
+                        style={{
+                          background:    heatmapBg(chg),
+                          border:        `1px solid ${isPos ? "rgba(34,197,94,0.3)" : isNeg ? "rgba(220,38,38,0.3)" : "var(--border)"}`,
+                          minWidth:      72,
+                          flex:          `${Math.max(1, Math.round(weight * 100))}`,
+                          height:        Math.max(72, Math.round(72 + weight * 80)),
+                          padding:       "10px 8px",
+                        }}>
+                        <span className="text-sm font-extrabold leading-tight" style={{ color: "var(--text)" }}>
+                          {r.ticker}
+                        </span>
+                        <span className="text-[11px] font-bold mt-1 tabular-nums" style={{ color: tileColor }}>
+                          {chg != null ? `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%` : "—"}
+                        </span>
+                        <span className="text-[10px] mt-0.5 tabular-nums" style={{ color: "var(--muted)" }}>
+                          {r.mktValue != null ? fmt(r.mktValue) : "—"}
+                        </span>
+                      </button>
+                    );
+                  })}
+              </div>
             </div>
           )}
 
-          <div className="overflow-x-auto mt-3">
+          {/* Sort controls */}
+          <div className="px-5 py-3 flex items-center gap-2 border-t" style={{ borderColor: "var(--border)" }}>
+            <span className="text-xs font-semibold uppercase tracking-wider mr-1" style={{ color: "var(--muted)" }}>Sort:</span>
+            {([
+              { key: "value",    label: "Position Size" },
+              { key: "pnlPct",   label: "All-time P&L" },
+              { key: "todayPct", label: "Today" },
+            ] as const).map(({ key, label }) => {
+              const active = sortBy === key;
+              const arrow  = active ? (sortDir === "desc" ? " ↓" : " ↑") : "";
+              return (
+                <button key={key} onClick={() => toggleSort(key)}
+                  className="text-xs px-3 py-1.5 rounded-lg font-semibold transition-all hover:opacity-85"
+                  style={{
+                    background: active ? "linear-gradient(135deg,#3b82f6,#6366f1)" : "var(--surface2)",
+                    color:      active ? "#fff" : "var(--muted2)",
+                    border:     active ? "none" : "1px solid var(--border2)",
+                  }}>
+                  {label}{arrow}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="overflow-x-auto">
             <table className="w-full text-xs border-collapse">
               <thead>
                 <tr style={{ background: "var(--surface2)", borderBottom: "1px solid var(--border)" }}>
@@ -379,7 +703,7 @@ export default function PortfolioTracker({ onSelectTicker }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row, i) => (
+                {sortedRows.map((row, i) => (
                   <tr key={row.ticker}
                     style={{ background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.015)",
                              borderBottom: "1px solid var(--border)" }}>
@@ -402,26 +726,26 @@ export default function PortfolioTracker({ onSelectTicker }: Props) {
 
                     {/* Avg Cost */}
                     <td className="px-4 py-3 tabular-nums" style={{ color: "var(--text)" }}>
-                      ${row.avgCost.toFixed(2)}
+                      {sym}{conv(row.avgCost).toFixed(2)}
                     </td>
 
                     {/* Current Price */}
                     <td className="px-4 py-3 tabular-nums font-semibold" style={{ color: "var(--text)" }}>
-                      {row.live ? `$${row.live.price.toFixed(2)}` : (
+                      {row.live ? `${sym}${conv(row.live.price).toFixed(2)}` : (
                         <span style={{ color: "var(--muted)" }}>—</span>
                       )}
                     </td>
 
                     {/* Market Value */}
                     <td className="px-4 py-3 tabular-nums font-semibold" style={{ color: "var(--text)" }}>
-                      {row.mktValue !== null ? fmtMoney(row.mktValue) : "—"}
+                      {row.mktValue !== null ? fmt(row.mktValue) : "—"}
                     </td>
 
                     {/* P&L $ */}
                     <td className="px-4 py-3 tabular-nums font-semibold"
                       style={{ color: row.pnl !== null ? pctColor(row.pnl) : "var(--muted)" }}>
                       {row.pnl !== null
-                        ? `${row.pnl >= 0 ? "+" : ""}${fmtMoney(row.pnl)}`
+                        ? `${row.pnl >= 0 ? "+" : ""}${fmt(row.pnl)}`
                         : "—"}
                     </td>
 
@@ -444,7 +768,7 @@ export default function PortfolioTracker({ onSelectTicker }: Props) {
                           {row.live.changePct >= 0 ? "+" : ""}{row.live.changePct.toFixed(2)}%
                           <div style={{ color: "var(--muted)", fontSize: 10 }}>
                             {row.todayPnl !== null
-                              ? `${row.todayPnl >= 0 ? "+" : ""}${fmtMoney(row.todayPnl)}`
+                              ? `${row.todayPnl >= 0 ? "+" : ""}${fmt(row.todayPnl)}`
                               : ""}
                           </div>
                         </>
