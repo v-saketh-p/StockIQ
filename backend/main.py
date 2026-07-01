@@ -1611,6 +1611,35 @@ def get_portfolio_performance(body: PortfolioRequest):
     }
 
 
+# ── ML Backtest endpoint ──────────────────────────────────────────────────────
+@app.get("/api/stock/{ticker}/backtest")
+def get_backtest(ticker: str):
+    from ml_predictor import backtest
+    ticker = ticker.upper()
+    result = backtest(ticker)
+    if result is None:
+        raise HTTPException(status_code=400, detail="Not enough data to run backtest")
+    return result
+
+
+# ── ML Prediction endpoint ────────────────────────────────────────────────────
+@app.get("/api/stock/{ticker}/prediction")
+def get_prediction(ticker: str):
+    from ml_predictor import train_and_predict, get_news_sentiment, blend_prediction
+    ticker = ticker.upper()
+    prediction = train_and_predict(ticker)
+    if prediction is None:
+        raise HTTPException(status_code=400, detail="Needs at least 7 months of price history — very new IPOs may not have enough data yet")
+    # Pass company name so NewsAPI can search by full name too
+    company_name = ""
+    try:
+        company_name = yf.Ticker(ticker).info.get("longName") or yf.Ticker(ticker).info.get("shortName") or ""
+    except Exception:
+        pass
+    sentiment = get_news_sentiment(ticker, company_name)
+    return blend_prediction(prediction, sentiment)
+
+
 # ── Portfolio batch-price endpoint ────────────────────────────────────────────
 @app.get("/api/fx/usdgbp")
 def get_fx_usdgbp():
