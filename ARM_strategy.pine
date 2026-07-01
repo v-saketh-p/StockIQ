@@ -1,0 +1,215 @@
+// ARM — Adaptive Regime Momentum Strategy
+// =========================================
+// Paste this into TradingView Pine Script Editor (v5).
+// Apply to any stock on the DAILY chart.
+//
+// HOW IT WORKS:
+//   1. ADX detects whether the stock is TRENDING or RANGING
+//   2. In a TREND  → buy when 12-1 month momentum is strong & price is leading
+//   3. In a RANGE  → buy when RSI is oversold + price near lower Bollinger Band + volume spike
+//   4. Exit when the entry condition breaks down
+//
+// NOTE: TradingView tests one stock at a time. Our Python backtest rotates
+// across 78 stocks — so results here will differ. Use this to visually
+// confirm signals and sanity-check individual names.
+
+//@version=5
+strategy(
+     title            = "ARM - Adaptive Regime Momentum",
+     shorttitle        = "ARM",
+     overlay           = true,
+     initial_capital   = 15000,
+     default_qty_type  = strategy.percent_of_equity,
+     default_qty_value = 100,
+     commission_type   = strategy.commission.percent,
+     commission_value  = 0.05,
+     slippage          = 2
+ )
+
+// ═══════════════════════════════════════════════
+//  INPUTS
+// ═══════════════════════════════════════════════
+
+grp1 = "Regime Detection (ADX)"
+adx_len       = input.int(14,  "ADX Length",            group=grp1, minval=5)
+adx_trend     = input.int(25,  "Trending Threshold",    group=grp1, minval=10, tooltip="ADX above this = trending market")
+adx_range_    = input.int(20,  "Ranging Threshold",     group=grp1, minval=5,  tooltip="ADX below this = ranging market")
+
+grp2 = "Momentum Signal"
+mom_long      = input.int(252, "Lookback (trading days)", group=grp2, minval=60,  tooltip="~12 months. We skip the most recent month to avoid short-term reversal.")
+mom_skip      = input.int(21,  "Skip recent days",        group=grp2, minval=5,   tooltip="~1 month. Jegadeesh-Titman 12-1 factor.")
+mom_min       = input.float(0.05, "Min momentum to buy",  group=grp2, step=0.01,  tooltip="Stock must be up at least this % over the lookback period.")
+
+grp3 = "Mean Reversion Signal"
+rsi_len       = input.int(14,  "RSI Length",            group=grp3, minval=5)
+rsi_os        = input.int(35,  "RSI Oversold level",    group=grp3, minval=10, tooltip="Buy when RSI is below this in a ranging market")
+rsi_ob        = input.int(65,  "RSI Overbought level",  group=grp3, minval=50, tooltip="Exit when RSI is above this")
+bb_len        = input.int(20,  "Bollinger Band Length", group=grp3, minval=5)
+bb_mult       = input.float(2.0,"Bollinger Band Std",   group=grp3, step=0.1)
+bb_entry_pct  = input.float(0.25,"BB Entry Zone (0–1)", group=grp3, step=0.05, tooltip="Buy when price is in the bottom X% of the BB range")
+
+grp4 = "Volume Filter"
+vol_len       = input.int(20,  "Volume MA Length",      group=grp4, minval=5)
+vol_trend_min = input.float(1.0,"Min vol ratio (trend)", group=grp4, step=0.1, tooltip="Volume must be at least this multiple of its MA for momentum entries")
+vol_mr_min    = input.float(1.3,"Min vol ratio (mean rev)", group=grp4, step=0.1, tooltip="Higher bar for mean reversion — need confirmation spike")
+
+grp5 = "Display"
+show_bb       = input.bool(true,  "Show Bollinger Bands",  group=grp5)
+show_regime   = input.bool(true,  "Colour background by regime", group=grp5)
+show_signals  = input.bool(true,  "Show entry/exit markers", group=grp5)
+
+// ═══════════════════════════════════════════════
+//  CALCULATIONS
+// ═══════════════════════════════════════════════
+
+// ── ADX (built-in) ──────────────────────────────
+[di_plus, di_minus, adx_val] = ta.dmi(adx_len, adx_len)
+
+is_trending = adx_val >= adx_trend
+is_ranging  = adx_val <= adx_range_
+is_neutral  = not is_trending and not is_ranging
+
+// ── RSI ─────────────────────────────────────────
+rsi_val = ta.rsi(close, rsi_len)
+
+// ── Bollinger Bands ─────────────────────────────
+[bb_upper, bb_mid, bb_lower] = ta.bb(close, bb_len, bb_mult)
+bb_width = bb_upper - bb_lower
+bb_pct   = bb_width > 0 ? (close - bb_lower) / bb_width : 0.5
+
+// ── 12-1 Momentum (Jegadeesh-Titman) ────────────
+// Returns are meaningless until we have enough bars
+has_enough_bars = bar_index >= mom_long + mom_skip
+momentum = has_enough_bars ? (close[mom_skip] / close[mom_long]) - 1 : na
+
+// ── Volume Ratio ────────────────────────────────
+vol_ma    = ta.sma(volume, vol_len)
+vol_ratio = vol_ma > 0 ? volume / vol_ma : 1.0
+
+// ═══════════════════════════════════════════════
+//  SIGNAL LOGIC
+// ═══════════════════════════════════════════════
+
+// ENTRY — Momentum (trending regime)
+//   ADX is strong, bulls leading bears, momentum positive, volume present
+buy_momentum = is_trending
+             and di_plus > di_minus
+             and not na(momentum)
+             and momentum >= mom_min
+             and vol_ratio >= vol_trend_min
+             and strategy.position_size == 0
+
+// ENTRY — Mean Reversion (ranging regime)
+//   ADX is weak, RSI washed out, near lower BB, volume spike
+buy_mean_rev = is_ranging
+             and rsi_val < rsi_os
+             and bb_pct  < bb_entry_pct
+             and vol_ratio >= vol_mr_min
+             and strategy.position_size == 0
+
+// EXIT — Momentum position breaks down
+exit_momentum = strategy.position_size > 0
+              and (di_minus > di_plus or (not na(momentum) and momentum < 0))
+
+// EXIT — Mean reversion position reaches target or deteriorates
+exit_mean_rev = strategy.position_size > 0
+              and (rsi_val > rsi_ob or bb_pct > 0.80)
+
+// EXIT — Catch-all: ADX regime has flipped and neither signal active
+exit_regime_flip = strategy.position_size > 0
+                 and is_ranging
+                 and not buy_mean_rev
+                 and rsi_val > 50
+
+// ═══════════════════════════════════════════════
+//  STRATEGY ORDERS
+// ═══════════════════════════════════════════════
+
+if buy_momentum
+    strategy.entry("Long (Mom)", strategy.long, comment="MOM")
+
+if buy_mean_rev
+    strategy.entry("Long (MR)", strategy.long, comment="MR")
+
+if exit_momentum or exit_mean_rev or exit_regime_flip
+    strategy.close_all(comment="EXIT")
+
+// ═══════════════════════════════════════════════
+//  VISUALS — Main chart (overlay)
+// ═══════════════════════════════════════════════
+
+// Regime background
+col_trend  = color.new(color.green, 91)
+col_range  = color.new(color.orange, 91)
+col_none   = color.new(color.gray,  97)
+
+bgcolor(show_regime
+      ? (is_trending ? col_trend : is_ranging ? col_range : col_none)
+      : na,
+      title = "Regime Background")
+
+// Bollinger Bands
+p_upper = plot(show_bb ? bb_upper : na, "BB Upper", color.new(color.blue, 60), linewidth=1)
+p_lower = plot(show_bb ? bb_lower : na, "BB Lower", color.new(color.blue, 60), linewidth=1)
+p_mid   = plot(show_bb ? bb_mid   : na, "BB Mid",   color.new(color.blue, 75), linewidth=1, style=plot.style_circles)
+fill(p_upper, p_lower, color.new(color.blue, 93), title="BB Fill")
+
+// Entry / exit markers
+plotshape(show_signals and buy_momentum,
+         title="Momentum Buy",
+         style=shape.triangleup, location=location.belowbar,
+         color=color.new(color.green, 0), size=size.small, text="MOM")
+
+plotshape(show_signals and buy_mean_rev,
+         title="Mean Rev Buy",
+         style=shape.triangleup, location=location.belowbar,
+         color=color.new(color.teal, 0), size=size.small, text="MR")
+
+plotshape(show_signals and (exit_momentum or exit_mean_rev or exit_regime_flip),
+         title="Exit",
+         style=shape.triangledown, location=location.abovebar,
+         color=color.new(color.red, 0), size=size.small, text="EXIT")
+
+// ═══════════════════════════════════════════════
+//  INDICATOR PANEL — ADX  (separate pane)
+// ═══════════════════════════════════════════════
+
+// Pine Script can only have one pane per script when using strategy.
+// To see ADX and RSI panels, also load the companion indicator below.
+//
+// You can see ADX and RSI by adding the built-in "DMI" and "RSI"
+// indicators from TradingView's indicator library alongside this strategy.
+
+// ── Info table (top-right corner) ───────────────
+var table info = table.new(position.top_right, 2, 6,
+     bgcolor        = color.new(color.black, 70),
+     border_color   = color.new(color.gray, 50),
+     border_width   = 1,
+     frame_color    = color.new(color.gray, 50),
+     frame_width    = 1)
+
+if barstate.islast
+    regime_text  = is_trending ? "TRENDING" : is_ranging ? "RANGING" : "NEUTRAL"
+    regime_color = is_trending ? color.green : is_ranging ? color.orange : color.gray
+    signal_text  = buy_momentum ? "MOM BUY" : buy_mean_rev ? "MR BUY" : "—"
+    signal_color = (buy_momentum or buy_mean_rev) ? color.green : color.gray
+    mom_text     = not na(momentum) ? str.tostring(math.round(momentum * 100, 1)) + "%" : "n/a"
+    mom_color    = not na(momentum) and momentum >= mom_min ? color.green : color.red
+
+    table.cell(info, 0, 0, "Regime",   text_color=color.silver, text_size=size.small)
+    table.cell(info, 1, 0, regime_text, text_color=regime_color, text_size=size.small)
+
+    table.cell(info, 0, 1, "ADX",      text_color=color.silver, text_size=size.small)
+    table.cell(info, 1, 1, str.tostring(math.round(adx_val, 1)), text_color=color.white, text_size=size.small)
+
+    table.cell(info, 0, 2, "RSI",      text_color=color.silver, text_size=size.small)
+    table.cell(info, 1, 2, str.tostring(math.round(rsi_val, 1)), text_color=color.white, text_size=size.small)
+
+    table.cell(info, 0, 3, "12-1 Mom", text_color=color.silver, text_size=size.small)
+    table.cell(info, 1, 3, mom_text,   text_color=mom_color,    text_size=size.small)
+
+    table.cell(info, 0, 4, "Vol Ratio",text_color=color.silver, text_size=size.small)
+    table.cell(info, 1, 4, str.tostring(math.round(vol_ratio, 2)) + "x", text_color=color.white, text_size=size.small)
+
+    table.cell(info, 0, 5, "Signal",   text_color=color.silver, text_size=size.small)
+    table.cell(info, 1, 5, signal_text, text_color=signal_color, text_size=size.small)
