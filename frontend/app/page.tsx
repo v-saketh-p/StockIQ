@@ -5,7 +5,8 @@ import SearchBar from "@/components/SearchBar";
 import StockDashboard from "@/components/StockDashboard";
 import Watchlist, { WatchlistGroup } from "@/components/Watchlist";
 import PortfolioTracker from "@/components/PortfolioTracker";
-import { BarChart2, Briefcase } from "lucide-react";
+import ARMSignals from "@/components/ARMSignals";
+import { BarChart2, Briefcase, Zap } from "lucide-react";
 
 function genId() {
   return Math.random().toString(36).slice(2, 9);
@@ -19,7 +20,7 @@ export default function Home() {
   const [ticker,       setTicker]       = useState<string | null>(null);
   const [watchlists,   setWatchlists]   = useState<WatchlistGroup[]>(DEFAULT_WATCHLISTS);
   const [activeListId, setActiveListId] = useState<string>("default");
-  const [view,         setView]         = useState<"research" | "portfolio">("research");
+  const [view,         setView]         = useState<"research" | "portfolio" | "arm">("research");
 
   // Load from localStorage after mount
   useEffect(() => {
@@ -95,6 +96,7 @@ export default function Home() {
           {([
             { id: "research",  label: "Research",  icon: <BarChart2 size={11} /> },
             { id: "portfolio", label: "Portfolio", icon: <Briefcase size={11} /> },
+            { id: "arm",       label: "ARM",       icon: <Zap size={11} /> },
           ] as const).map(v => (
             <button key={v.id} onClick={() => setView(v.id)}
               className="flex-1 flex items-center justify-center gap-1 text-[11px] font-semibold py-1.5 rounded-lg transition-all"
@@ -137,7 +139,9 @@ export default function Home() {
         </header>
 
         <div className="flex-1 overflow-y-auto p-6" data-scroll>
-          {view === "portfolio" ? (
+          {view === "arm" ? (
+            <ARMSignals onSelectTicker={t => { setTicker(t); setView("research"); }} />
+          ) : view === "portfolio" ? (
             <PortfolioTracker onSelectTicker={t => { setTicker(t); setView("research"); }} />
           ) : ticker ? (
             <StockDashboard ticker={ticker} onAddToWatchlist={addToWatchlist} />

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { TrendingUp, TrendingDown, Plus, RefreshCw, MessageSquare, X,
-         DollarSign, BarChart2, Activity, Layers, Sparkles } from "lucide-react";
+         DollarSign, BarChart2, Activity, Layers, Sparkles, Zap } from "lucide-react";
 import PriceChart from "./PriceChart";
 import MetricCard from "./MetricCard";
 import TechnicalGauge from "./TechnicalGauge";
@@ -108,6 +108,10 @@ export default function StockDashboard({
   const [error,     setError]     = useState<string | null>(null);
   const [chatOpen,  setChatOpen]  = useState(false);
   const [activeTab, setActiveTab] = useState<"overview" | "dcf" | "comps" | "research">("overview");
+  const [armStock,  setArmStock]  = useState<{
+    regime: string; signal: string; momentum: number; adx: number; rsi: number;
+    plus_di: number; minus_di: number; in_portfolio: boolean;
+  } | null>(null);
 
   async function fetchData() {
     setLoading(true);
@@ -123,7 +127,14 @@ export default function StockDashboard({
     }
   }
 
-  useEffect(() => { fetchData(); }, [ticker]);
+  async function fetchArmStock() {
+    try {
+      const res = await fetch(`http://localhost:8000/api/arm/stock/${ticker}`);
+      if (res.ok) setArmStock(await res.json());
+    } catch {}
+  }
+
+  useEffect(() => { fetchData(); fetchArmStock(); }, [ticker]);
 
   if (loading) {
     return (
@@ -365,6 +376,48 @@ export default function StockDashboard({
             <MetricCard label="200-Day MA" value={`$${fmt(tech.ma200)}`} positive={data.price > tech.ma200} note={data.price > tech.ma200 ? "↑ above" : "↓ below"} />
             <MetricCard label="Beta"       value={data.beta !== null ? data.beta.toFixed(2) : "N/A"} positive={null} />
           </MetricPanel>
+
+          {/* ARM Signal */}
+          {armStock && (() => {
+            const regimeColor: Record<string, string> = { TRENDING: "#10b981", RANGING: "#f59e0b", NEUTRAL: "#6b7280" };
+            const signalColor: Record<string, string> = { MOM_BUY: "#10b981", MR_BUY: "#06b6d4", WATCH: "#f59e0b", "-": "#6b7280" };
+            const signalLabel: Record<string, string> = { MOM_BUY: "MOM BUY", MR_BUY: "MR BUY", WATCH: "WATCH", "-": "—" };
+            const rc = regimeColor[armStock.regime] ?? "#6b7280";
+            const sc = signalColor[armStock.signal] ?? "#6b7280";
+            return (
+              <MetricPanel title="ARM Signal" color="#10b981" icon={<Zap size={12} />}>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs" style={{ color: "var(--muted)" }}>Regime</span>
+                  <span className="text-xs font-bold px-2 py-0.5 rounded-md"
+                    style={{ background: `${rc}1a`, color: rc, border: `1px solid ${rc}33` }}>
+                    {armStock.regime}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs" style={{ color: "var(--muted)" }}>Signal</span>
+                  <span className="text-xs font-bold px-2 py-0.5 rounded-md"
+                    style={{ background: `${sc}1a`, color: sc, border: `1px solid ${sc}33` }}>
+                    {signalLabel[armStock.signal] ?? armStock.signal}
+                  </span>
+                </div>
+                <MetricCard label="12-1 Momentum"
+                  value={`${armStock.momentum >= 0 ? "+" : ""}${armStock.momentum.toFixed(1)}%`}
+                  positive={armStock.momentum > 0} />
+                <MetricCard label="ADX" value={armStock.adx.toFixed(1)} positive={null} />
+                <MetricCard label="DI+ / DI−"
+                  value={`${armStock.plus_di.toFixed(1)} / ${armStock.minus_di.toFixed(1)}`}
+                  positive={armStock.plus_di > armStock.minus_di}
+                  note={armStock.plus_di > armStock.minus_di ? "Bulls ↑" : "Bears ↓"} />
+                <MetricCard label="RSI (Wilder)" value={armStock.rsi.toFixed(1)} positive={null} />
+                {armStock.in_portfolio && (
+                  <div className="text-xs px-2 py-1 rounded-lg text-center font-semibold mt-1"
+                    style={{ background: "rgba(16,185,129,0.1)", color: "#10b981", border: "1px solid rgba(16,185,129,0.2)" }}>
+                    ★ In ARM Universe
+                  </div>
+                )}
+              </MetricPanel>
+            );
+          })()}
 
         </div>
         </>
