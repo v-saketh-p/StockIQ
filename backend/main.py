@@ -10,6 +10,7 @@ import json
 import asyncio
 import numpy as np
 from datetime import datetime
+import time as _time
 from typing import List
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
@@ -1619,12 +1620,111 @@ def get_portfolio_performance(body: PortfolioRequest):
     }
 
 
+# ── Market Indices ticker bar ─────────────────────────────────────────────────
+_indices_cache: dict = {"data": None, "ts": 0.0}
+
+MARKET_INDICES = [
+    {"symbol": "^GSPC",   "name": "S&P 500",     "format": "price"},
+    {"symbol": "^IXIC",   "name": "Nasdaq",       "format": "price"},
+    {"symbol": "^DJI",    "name": "Dow Jones",    "format": "price"},
+    {"symbol": "^RUT",    "name": "Russell 2000", "format": "price"},
+    {"symbol": "^VIX",    "name": "VIX",          "format": "price"},
+    {"symbol": "^TNX",    "name": "10Y Yield",    "format": "yield"},
+    {"symbol": "GC=F",    "name": "Gold",         "format": "price"},
+    {"symbol": "CL=F",    "name": "Oil",          "format": "price"},
+    {"symbol": "BTC-USD", "name": "Bitcoin",      "format": "price"},
+]
+
+
+@app.get("/api/market/indices")
+def get_market_indices():
+    import pytz
+    from datetime import datetime
+    global _indices_cache
+
+    now_ts = _time.time()
+    if _indices_cache["data"] is not None and (now_ts - _indices_cache["ts"]) < 30:
+        return _indices_cache["data"]
+
+    et = pytz.timezone("America/New_York")
+    now_et = datetime.now(et)
+    h = now_et.hour + now_et.minute / 60.0
+    weekday = now_et.weekday()
+    if weekday >= 5:
+        market_status = "closed"
+    elif 4.0 <= h < 9.5:
+        market_status = "pre"
+    elif 9.5 <= h < 16.0:
+        market_status = "open"
+    elif 16.0 <= h < 20.0:
+        market_status = "post"
+    else:
+        market_status = "closed"
+
+    results = []
+    for idx in MARKET_INDICES:
+        try:
+            t = yf.Ticker(idx["symbol"])
+            fi = t.fast_info
+            price = fi.last_price
+            prev  = fi.previous_close
+            if price is None or prev is None:
+                continue
+            price = float(price)
+            prev  = float(prev)
+            if pd.isna(price) or pd.isna(prev) or prev == 0:
+                continue
+            change     = price - prev
+            change_pct = (change / prev) * 100
+
+            item: dict = {
+                "symbol":       idx["symbol"],
+                "name":         idx["name"],
+                "format":       idx["format"],
+                "price":        round(price, 2),
+                "change":       round(change, 2),
+                "changePct":    round(change_pct, 2),
+                "marketStatus": market_status,
+            }
+
+            if market_status in ("pre", "post", "closed"):
+                try:
+                    info = t.info
+                    pre_p  = info.get("preMarketPrice")
+                    post_p = info.get("postMarketPrice")
+                    if market_status == "pre" and pre_p:
+                        ext_pct = (float(pre_p) - prev) / prev * 100
+                        item["extendedPrice"]     = round(float(pre_p), 2)
+                        item["extendedChangePct"] = round(ext_pct, 2)
+                        item["extendedSession"]   = "PRE"
+                    elif market_status in ("post", "closed") and post_p:
+                        ext_pct = (float(post_p) - price) / price * 100
+                        item["extendedPrice"]     = round(float(post_p), 2)
+                        item["extendedChangePct"] = round(ext_pct, 2)
+                        item["extendedSession"]   = "POST"
+                except Exception:
+                    pass
+
+            results.append(item)
+        except Exception:
+            continue
+
+    _indices_cache = {"data": results, "ts": now_ts}
+    return results
+
+
 # ── ML Backtest endpoint ──────────────────────────────────────────────────────
 @app.get("/api/stock/{ticker}/backtest")
-def get_backtest(ticker: str):
+async def get_backtest(ticker: str):
     from ml_predictor import backtest
     ticker = ticker.upper()
-    result = backtest(ticker)
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(backtest, ticker),
+            timeout=300.0,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Backtest timed out — try again")
     if result is None:
         raise HTTPException(status_code=400, detail="Not enough data to run backtest")
     return result
@@ -1632,19 +1732,37 @@ def get_backtest(ticker: str):
 
 # ── ML Prediction endpoint ────────────────────────────────────────────────────
 @app.get("/api/stock/{ticker}/prediction")
-def get_prediction(ticker: str):
+async def get_prediction(ticker: str):
     from ml_predictor import train_and_predict, get_news_sentiment, blend_prediction
     ticker = ticker.upper()
-    prediction = train_and_predict(ticker)
+    try:
+        prediction = await asyncio.wait_for(
+            asyncio.to_thread(train_and_predict, ticker),
+            timeout=300.0,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Prediction timed out — try again")
     if prediction is None:
         raise HTTPException(status_code=400, detail="Needs at least 7 months of price history — very new IPOs may not have enough data yet")
-    # Pass company name so NewsAPI can search by full name too
+
     company_name = ""
     try:
         company_name = yf.Ticker(ticker).info.get("longName") or yf.Ticker(ticker).info.get("shortName") or ""
     except Exception:
         pass
-    sentiment = get_news_sentiment(ticker, company_name)
+
+    try:
+        sentiment = await asyncio.wait_for(
+            asyncio.to_thread(get_news_sentiment, ticker, company_name),
+            timeout=30.0,
+        )
+    except asyncio.TimeoutError:
+        sentiment = {
+            "averageScore": 0.0, "sentimentLabel": "Neutral", "articleCount": 0,
+            "headlines": [], "positiveCount": 0, "negativeCount": 0, "neutralCount": 0,
+            "sources": {},
+        }
+
     return blend_prediction(prediction, sentiment)
 
 

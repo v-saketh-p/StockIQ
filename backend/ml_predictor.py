@@ -1,12 +1,10 @@
 """
 ML prediction engine for StockIQ.
 
-Two models run on every ticker:
-  1. XGBoost  — snapshot features (RSI, momentum, MA crossovers, etc.)
-  2. LSTM     — 60-day price sequence (learns temporal patterns)
-
-Their probabilities are ensembled (weighted average) to produce the
-final 30-day directional forecast + price target range.
+Three signals ensembled into one 30-day directional forecast:
+  1. XGBoost  — snapshot features (RSI, momentum, MA crossovers, Bollinger, ATR, SPY context)
+  2. LSTM     — 60-day price sequence, run 5x for uncertainty estimation
+  3. FinBERT  — finance-aware news sentiment from Yahoo Finance + NewsAPI
 """
 
 import warnings
@@ -33,16 +31,19 @@ HORIZON   = 30   # days ahead we're trying to predict
 
 # XGBoost snapshot features
 XGB_FEATURES = [
-    "ret_1d", "ret_5d", "ret_10d", "ret_20d",
+    "ret_1d", "ret_5d", "ret_10d", "ret_20d", "ret_60d", "ret_120d",
     "vol_20d", "rsi_norm", "macd_norm", "macd_hist_norm",
     "price_vs_ma50", "price_vs_ma200", "ma50_vs_ma200",
     "vol_ratio", "hl_range",
+    "bb_position", "bb_width", "atr_norm", "pos_52w",
+    "spy_ret_1d", "spy_ret_5d",
 ]
 
-# LSTM sequence features (per timestep)
+# LSTM sequence features — short-term dynamics only (slow features hurt LSTM)
 LSTM_FEATURES = [
     "ret_1d", "ret_5d", "rsi_norm",
     "macd_hist_norm", "vol_ratio", "hl_range",
+    "bb_position", "atr_norm",
 ]
 
 FEATURE_LABELS = {
@@ -50,6 +51,8 @@ FEATURE_LABELS = {
     "ret_5d":          "5-day momentum",
     "ret_10d":         "10-day momentum",
     "ret_20d":         "20-day momentum",
+    "ret_60d":         "3-month momentum",
+    "ret_120d":        "6-month momentum",
     "vol_20d":         "Volatility (20d)",
     "rsi_norm":        "RSI signal",
     "macd_norm":       "MACD level",
@@ -59,12 +62,18 @@ FEATURE_LABELS = {
     "ma50_vs_ma200":   "Golden/Death cross",
     "vol_ratio":       "Volume surge",
     "hl_range":        "Daily price range",
+    "bb_position":     "Bollinger Band position",
+    "bb_width":        "Bollinger Band width",
+    "atr_norm":        "ATR volatility",
+    "pos_52w":         "52-week position",
+    "spy_ret_1d":      "Market (SPY) 1d",
+    "spy_ret_5d":      "Market (SPY) 5d",
 }
 
-# Ensemble weights
-XGB_WEIGHT  = 0.45
-LSTM_WEIGHT = 0.35
-SENT_WEIGHT = 0.20   # news sentiment as a third model signal
+# Ensemble weights — XGBoost is more reliable on tabular financial data than LSTM
+XGB_WEIGHT  = 0.55
+LSTM_WEIGHT = 0.25
+SENT_WEIGHT = 0.20
 
 
 # ── LSTM model definition ─────────────────────────────────────────────────────
@@ -87,7 +96,7 @@ class LSTMNet(nn.Module):
             hidden_size=hidden,
             num_layers=layers,
             batch_first=True,
-            dropout=0.15,             # light dropout between LSTM layers only
+            dropout=0.15,
         )
         self.norm = nn.LayerNorm(hidden)
         self.head = nn.Sequential(
@@ -104,21 +113,23 @@ class LSTMNet(nn.Module):
 
 # ── Feature engineering (shared by both models) ───────────────────────────────
 
-def _compute_features(hist: pd.DataFrame) -> pd.DataFrame:
+def _compute_features(hist: pd.DataFrame, spy_hist: pd.DataFrame | None = None) -> pd.DataFrame:
     """
-    Compute all features. MA window lengths adapt to available history:
-      >= 400 rows → MA50 + MA200  (full feature set)
-      >= 220 rows → MA50 only     (drops the two MA200 features)
+    Compute all features. Windows adapt to available history:
+      >= 400 rows → MA200 features included
+      >= 252 rows → 52-week position included
     """
     n  = len(hist)
     df = hist[["Close", "Volume", "High", "Low"]].copy()
 
-    # Returns
-    df["ret_1d"]  = df["Close"].pct_change(1)
-    df["ret_5d"]  = df["Close"].pct_change(5)
-    df["ret_10d"] = df["Close"].pct_change(10)
-    df["ret_20d"] = df["Close"].pct_change(20)
-    df["vol_20d"] = df["ret_1d"].rolling(20).std()
+    # Returns — multi-timeframe momentum (short → long-term)
+    df["ret_1d"]   = df["Close"].pct_change(1)
+    df["ret_5d"]   = df["Close"].pct_change(5)
+    df["ret_10d"]  = df["Close"].pct_change(10)
+    df["ret_20d"]  = df["Close"].pct_change(20)
+    df["ret_60d"]  = df["Close"].pct_change(60)   # 3-month momentum
+    df["ret_120d"] = df["Close"].pct_change(120)  # 6-month momentum
+    df["vol_20d"]  = df["ret_1d"].rolling(20).std()
 
     # RSI(14) normalised to [-1, 1]
     delta    = df["Close"].diff()
@@ -142,7 +153,7 @@ def _compute_features(hist: pd.DataFrame) -> pd.DataFrame:
     ma50 = df["Close"].rolling(50).mean()
     df["price_vs_ma50"] = (df["Close"] - ma50) / ma50
 
-    # MA200 only when there's enough history to be meaningful
+    # MA200 only when there's enough history
     if n >= 400:
         ma200 = df["Close"].rolling(200).mean()
         df["price_vs_ma200"] = (df["Close"] - ma200) / ma200
@@ -152,6 +163,34 @@ def _compute_features(hist: pd.DataFrame) -> pd.DataFrame:
     vol_avg        = df["Volume"].rolling(20).mean()
     df["vol_ratio"] = df["Volume"] / vol_avg.replace(0, np.nan)
     df["hl_range"]  = (df["High"] - df["Low"]) / df["Close"]
+
+    # Bollinger Bands (20-day, 2 std devs)
+    ma20  = df["Close"].rolling(20).mean()
+    std20 = df["Close"].rolling(20).std()
+    df["bb_position"] = (df["Close"] - ma20) / (2 * std20.replace(0, np.nan))
+    df["bb_width"]    = (4 * std20) / ma20.replace(0, np.nan)
+
+    # ATR(14) — average true range normalised by price
+    hl   = df["High"] - df["Low"]
+    hc   = (df["High"] - df["Close"].shift()).abs()
+    lc   = (df["Low"]  - df["Close"].shift()).abs()
+    tr   = pd.concat([hl, hc, lc], axis=1).max(axis=1)
+    df["atr_norm"] = tr.rolling(14).mean() / df["Close"]
+
+    # 52-week high/low position (0 = at yearly low, 1 = at yearly high)
+    if n >= 252:
+        high_52w = df["Close"].rolling(252).max()
+        low_52w  = df["Close"].rolling(252).min()
+        rng      = (high_52w - low_52w).replace(0, np.nan)
+        df["pos_52w"] = (df["Close"] - low_52w) / rng
+
+    # SPY market context (skip if ticker is SPY itself)
+    if spy_hist is not None and not spy_hist.empty:
+        spy_close = spy_hist["Close"].rename("spy_close")
+        spy_close.index = spy_close.index.tz_localize(None) if spy_close.index.tz else spy_close.index
+        df.index = df.index.tz_localize(None) if df.index.tz else df.index
+        df["spy_ret_1d"] = spy_close.pct_change(1).reindex(df.index, method="ffill")
+        df["spy_ret_5d"] = spy_close.pct_change(5).reindex(df.index, method="ffill")
 
     return df
 
@@ -179,12 +218,15 @@ def _train_xgboost(df: pd.DataFrame):
     y = train["label"].values
 
     model = XGBClassifier(
-        n_estimators=300,
-        max_depth=4,
-        learning_rate=0.04,
+        n_estimators=500,
+        max_depth=5,
+        learning_rate=0.03,
         subsample=0.8,
         colsample_bytree=0.75,
-        min_child_weight=5,
+        min_child_weight=3,
+        gamma=0.1,
+        reg_alpha=0.1,
+        reg_lambda=1.5,
         eval_metric="logloss",
         verbosity=0,
         random_state=42,
@@ -203,39 +245,45 @@ def _train_xgboost(df: pd.DataFrame):
 
 # ── LSTM ──────────────────────────────────────────────────────────────────────
 
+def _norm_seq(seq: np.ndarray) -> np.ndarray:
+    """Normalise a (lookback, n_feat) window using only its own stats — no future leakage."""
+    mean = np.nanmean(seq, axis=0)
+    std  = np.nanstd(seq, axis=0)
+    std[std == 0] = 1
+    return ((seq - mean) / std).astype(np.float32)
+
+
 def _build_sequences(df: pd.DataFrame, lookback: int = LOOKBACK):
     """
     Slide a window of `lookback` days across the feature matrix.
-    Returns X (n_samples, lookback, n_feat) and y (n_samples,) as numpy arrays.
-    The last sequence has no label and is returned separately as `latest_seq`.
+    Global z-score normalisation across the dataset (fine for live prediction).
+    Returns X (n_samples, lookback, n_feat), y (n_samples,), latest_seq.
     """
     df_lstm = df.copy()
     df_lstm["forward_ret"] = df_lstm["Close"].pct_change(HORIZON).shift(-HORIZON)
     df_lstm["label"]       = (df_lstm["forward_ret"] > 0).astype(int)
 
-    # Drop rows where sequence features are NaN, keep label separately
-    feat_df = df_lstm[LSTM_FEATURES].copy()
+    feat_cols = [c for c in LSTM_FEATURES if c in df_lstm.columns]
+    feat_df   = df_lstm[feat_cols].copy()
 
-    # Z-score normalise each feature across the whole history
-    means = feat_df.mean()
-    stds  = feat_df.std().replace(0, 1)
+    means     = feat_df.mean()
+    stds      = feat_df.std().replace(0, 1)
     feat_norm = (feat_df - means) / stds
 
-    values = feat_norm.values          # (T, n_feat)
-    labels = df_lstm["label"].values   # (T,)
-    valid  = df_lstm["forward_ret"].notna().values  # rows with a known future label
+    values = feat_norm.values
+    labels = df_lstm["label"].values
+    valid  = df_lstm["forward_ret"].notna().values
 
     X_list, y_list = [], []
     for i in range(lookback, len(values)):
         seq = values[i - lookback : i]
         if np.any(np.isnan(seq)):
             continue
-        if valid[i]:                   # has a label → training sample
-            X_list.append(seq)
+        if valid[i]:
+            X_list.append(seq.copy())
             y_list.append(float(labels[i]))
 
-    # The very last sequence is "today" — used for inference only
-    latest_seq = values[-lookback:]
+    latest_seq = values[-lookback:].copy()
     if np.any(np.isnan(latest_seq)):
         latest_seq = None
 
@@ -245,7 +293,7 @@ def _build_sequences(df: pd.DataFrame, lookback: int = LOOKBACK):
     return np.array(X_list, dtype=np.float32), np.array(y_list, dtype=np.float32), latest_seq
 
 
-def _train_lstm(df: pd.DataFrame, lookback: int = LOOKBACK, seed: int = 42) -> float | None:
+def _train_lstm(df: pd.DataFrame, lookback: int = LOOKBACK, seed: int = 42) -> tuple[float, float] | None:
     """
     Train the LSTM and return the probability that today → up in HORIZON days.
     Returns None if there isn't enough data.
@@ -259,10 +307,10 @@ def _train_lstm(df: pd.DataFrame, lookback: int = LOOKBACK, seed: int = 42) -> f
 
     n_features = X.shape[2]
 
-    # ── Class imbalance weight (makes loss equal for both classes) ──
+    # ── Class imbalance weight — only upweight positives when they're the minority ──
     pos_ratio  = float(y.mean())
     neg_ratio  = 1.0 - pos_ratio
-    pos_weight = torch.tensor([neg_ratio / pos_ratio]) if pos_ratio > 0 else torch.tensor([1.0])
+    pos_weight = torch.tensor([neg_ratio / pos_ratio]) if 0 < pos_ratio < 0.5 else torch.tensor([1.0])
 
     # ── DataLoader ──
     dataset = TensorDataset(torch.from_numpy(X), torch.from_numpy(y))
@@ -304,51 +352,74 @@ def _train_lstm(df: pd.DataFrame, lookback: int = LOOKBACK, seed: int = 42) -> f
             if no_improve >= patience:
                 break
 
-    # ── Inference — convert logit → probability ──
-    model.eval()
+    # ── Monte Carlo Dropout inference ────────────────────────────────────────
+    # Keep model in train() mode so inter-layer LSTM dropout stays active.
+    # Each of the N_MC forward passes gets a different random dropout mask,
+    # producing a distribution of probabilities. std = model uncertainty.
+    # This adds ~0 training time vs retraining multiple times.
+    N_MC = 30
+    model.train()
+    seq_t = torch.from_numpy(latest_seq.astype(np.float32)).unsqueeze(0).to(device)
+    mc_probs = []
     with torch.no_grad():
-        seq_t = torch.from_numpy(latest_seq.astype(np.float32)).unsqueeze(0).to(device)
-        logit = model(seq_t)
-        prob  = torch.sigmoid(logit).item()
+        for _ in range(N_MC):
+            logit = model(seq_t)
+            mc_probs.append(torch.sigmoid(logit).item())
 
-    return float(prob)
+    return float(np.mean(mc_probs)), float(np.std(mc_probs))
 
 
-def _train_lstm_ensemble(df: pd.DataFrame, lookback: int = LOOKBACK, n_runs: int = 5) -> tuple[float | None, float | None]:
+def _train_lstm_ensemble(df: pd.DataFrame, lookback: int = LOOKBACK, n_runs: int = 1) -> tuple[float | None, float | None]:
     """
-    Run the LSTM n_runs times with different seeds.
-    Returns (mean_prob, std_prob) so the caller can show uncertainty.
+    Train LSTM once, derive uncertainty via Monte Carlo Dropout (30 passes).
+    n_runs kept for API compat but ignored — MC dropout is faster and more principled.
     """
-    probs = []
-    for i in range(n_runs):
-        prob = _train_lstm(df, lookback=lookback, seed=42 + i * 13)
-        if prob is not None:
-            probs.append(prob)
-    if not probs:
+    result = _train_lstm(df, lookback=lookback, seed=42)
+    if result is None:
         return None, None
-    return float(np.mean(probs)), float(np.std(probs))
+    return result
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def train_and_predict(ticker: str) -> dict | None:
-    """
-    Fetch history, train XGBoost + LSTM, ensemble their probabilities.
-    Returns a dict ready to be JSON-serialised by FastAPI.
-    """
-    t    = yf.Ticker(ticker)
-    hist = t.history(period="3y")
-    hist = hist[hist["Close"].notna()].copy()
+_spy_cache: pd.DataFrame | None = None
 
-    if len(hist) < 150:   # absolute minimum: ~7 months of daily data
+def _fetch_spy() -> pd.DataFrame | None:
+    global _spy_cache
+    if _spy_cache is not None:
+        return _spy_cache
+    try:
+        spy = yf.Ticker("SPY").history(period="max")
+        _spy_cache = spy[spy["Close"].notna()].copy() if not spy.empty else None
+        return _spy_cache
+    except Exception:
         return None
 
-    df = _compute_features(hist)
+
+def train_and_predict(ticker: str) -> dict | None:
+    """
+    XGBoost trains on 10 years of data; LSTM trains on the last 3 years.
+    XGBoost benefits from long history; LSTM stays fast on recent patterns.
+    """
+    t = yf.Ticker(ticker)
+
+    # XGBoost — 10 years for strong pattern recognition
+    hist_xgb = t.history(period="10y")
+    hist_xgb = hist_xgb[hist_xgb["Close"].notna()].copy()
+    if len(hist_xgb) < 150:
+        return None
+
+    # LSTM — 3 years to stay fast
+    hist_lstm = hist_xgb.iloc[-756:] if len(hist_xgb) > 756 else hist_xgb
+
+    spy_hist = _fetch_spy() if ticker.upper() != "SPY" else None
+    df_xgb  = _compute_features(hist_xgb,  spy_hist=spy_hist)
+    df_lstm = _compute_features(hist_lstm, spy_hist=spy_hist)
 
     # ── Run both models ──
-    lookback = min(LOOKBACK, max(20, len(hist) // 5))
-    _, xgb_prob, importance       = _train_xgboost(df)
-    lstm_prob, lstm_uncertainty   = _train_lstm_ensemble(df, lookback=lookback, n_runs=5)
+    lookback = min(LOOKBACK, max(20, len(hist_lstm) // 5))
+    _, xgb_prob, importance     = _train_xgboost(df_xgb)
+    lstm_prob, lstm_uncertainty = _train_lstm_ensemble(df_lstm, lookback=lookback, n_runs=1)
 
     if xgb_prob is None:
         return None
@@ -365,8 +436,8 @@ def train_and_predict(ticker: str) -> dict | None:
     raw_conf  = ensemble_prob if ensemble_prob >= 0.5 else (1 - ensemble_prob)
 
     # ── Price range (volatility-scaled) ──
-    current_price = float(hist["Close"].iloc[-1])
-    vol_20d_val   = float(df["vol_20d"].dropna().iloc[-1]) if not df["vol_20d"].dropna().empty else 0.015
+    current_price = float(hist_xgb["Close"].iloc[-1])
+    vol_20d_val   = float(df_xgb["vol_20d"].dropna().iloc[-1]) if not df_xgb["vol_20d"].dropna().empty else 0.015
     expected_move = current_price * vol_20d_val * np.sqrt(HORIZON)
 
     if direction == "Bullish":
@@ -515,63 +586,68 @@ def get_news_sentiment(ticker: str, company_name: str = "") -> dict:
 def backtest(ticker: str) -> dict | None:
     """
     Walk-forward backtest:
-      - Train on first 65% of 3yr history
+      - Train on first 65% of max available history
       - Test on remaining 35% (no data leakage)
       - Evaluate XGBoost, LSTM, and Ensemble accuracy separately
       - Simulate a simple strategy: buy when Bullish, hold cash when Bearish
     """
     t    = yf.Ticker(ticker)
-    hist = t.history(period="3y")
+    hist = t.history(period="max")
     hist = hist[hist["Close"].notna()].copy()
     if len(hist) < 150:
         return None
 
-    df = _compute_features(hist)
+    spy_hist = _fetch_spy() if ticker.upper() != "SPY" else None
+    df = _compute_features(hist, spy_hist=spy_hist)
     df["forward_ret"] = df["Close"].pct_change(HORIZON).shift(-HORIZON)
     df["label"]       = (df["forward_ret"] > 0).astype(int)
 
     feat_cols = _feature_cols_for(df)
     df_clean  = df.dropna(subset=feat_cols + ["forward_ret"])
 
-    split      = int(len(df_clean) * 0.65)
-    train_df   = df_clean.iloc[:split]
-    test_df    = df_clean.iloc[split:]
+    split    = int(len(df_clean) * 0.65)
+    train_df = df_clean.iloc[:split]
+    test_df  = df_clean.iloc[split:]
 
     if len(train_df) < 120 or len(test_df) < 30:
         return None
 
     # ── Train XGBoost on train split ──────────────────────────────────────────
     xgb = XGBClassifier(
-        n_estimators=300, max_depth=4, learning_rate=0.04,
-        subsample=0.8, colsample_bytree=0.75, min_child_weight=5,
+        n_estimators=500, max_depth=5, learning_rate=0.03,
+        subsample=0.8, colsample_bytree=0.75, min_child_weight=3,
+        gamma=0.1, reg_alpha=0.1, reg_lambda=1.5,
         eval_metric="logloss", verbosity=0, random_state=42,
     )
     xgb.fit(train_df[feat_cols].values, train_df["label"].values)
     xgb_probs_test = xgb.predict_proba(test_df[feat_cols].values)[:, 1]
 
     # ── Train LSTM on train-split sequences, infer on test sequences ──────────
-    feat_df   = df[LSTM_FEATURES].copy()
-    means     = feat_df.iloc[:split + int(len(df) * 0.35)].mean()  # normalise on train only
-    stds      = feat_df.iloc[:split + int(len(df) * 0.35)].std().replace(0, 1)
-    feat_norm = ((feat_df - means) / stds).values.astype(np.float32)
+    # Cap LSTM training to last 5 years of the train split to stay fast
+    LSTM_TRAIN_CAP = 1260
+    feat_cols_lstm = [c for c in LSTM_FEATURES if c in df.columns]
+
+    # Global normalisation using train-split stats only (no leakage into test)
+    train_feat = df.loc[train_df.index, feat_cols_lstm]
+    means_lstm = train_feat.mean()
+    stds_lstm  = train_feat.std().replace(0, 1)
+    feat_norm  = ((df[feat_cols_lstm] - means_lstm) / stds_lstm).values.copy()
 
     labels_arr = df["label"].values
     valid_arr  = df["forward_ret"].notna().values
     close_arr  = df["Close"].values
 
-    # Build train sequences
-    df_full_idx = df.index
-    train_end_loc = df.index.get_loc(train_df.index[-1]) if hasattr(df.index, 'get_loc') else split
-
     X_tr, y_tr = [], []
     X_te, y_te = [], []
-    te_close   = []  # closing prices for return simulation
+    te_close   = []
 
-    full_idx = list(range(len(df)))
-    for i in full_idx:
+    torch.manual_seed(42)
+    np.random.seed(42)
+
+    for i in range(len(df)):
         if i < LOOKBACK:
             continue
-        seq = feat_norm[i - LOOKBACK : i]
+        seq = feat_norm[i - LOOKBACK : i].copy()
         if np.any(np.isnan(seq)) or not valid_arr[i]:
             continue
         row_date = df.index[i]
@@ -584,6 +660,11 @@ def backtest(ticker: str) -> dict | None:
             y_te.append(float(labels_arr[i]))
             te_close.append(float(close_arr[i]))
 
+    # Keep only the most recent LSTM_TRAIN_CAP training sequences
+    if len(X_tr) > LSTM_TRAIN_CAP:
+        X_tr = X_tr[-LSTM_TRAIN_CAP:]
+        y_tr = y_tr[-LSTM_TRAIN_CAP:]
+
     lstm_probs_test = None
     if len(X_tr) >= 80 and len(X_te) >= 10:
         X_tr_t = torch.from_numpy(np.array(X_tr, dtype=np.float32))
@@ -591,17 +672,17 @@ def backtest(ticker: str) -> dict | None:
 
         pos_ratio  = float(y_tr_t.mean())
         neg_ratio  = 1.0 - pos_ratio
-        pos_weight = torch.tensor([neg_ratio / pos_ratio]) if pos_ratio > 0 else torch.tensor([1.0])
+        pos_weight = torch.tensor([neg_ratio / pos_ratio]) if 0 < pos_ratio < 0.5 else torch.tensor([1.0])
 
         loader  = DataLoader(TensorDataset(X_tr_t, y_tr_t), batch_size=32, shuffle=True)
         device  = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-        model   = LSTMNet(n_features=len(LSTM_FEATURES)).to(device)
+        model   = LSTMNet(n_features=len(feat_cols_lstm)).to(device)
         opt     = torch.optim.Adam(model.parameters(), lr=5e-4, weight_decay=1e-4)
         loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(device))
 
         model.train()
-        best_loss, patience, no_improve = float("inf"), 8, 0
-        for _ in range(50):
+        best_loss, patience, no_improve = float("inf"), 10, 0
+        for _ in range(80):
             ep_loss = 0.0
             for xb, yb in loader:
                 xb, yb = xb.to(device), yb.to(device)
@@ -649,26 +730,101 @@ def backtest(ticker: str) -> dict | None:
             return None, int(mask.sum())
         return float((( probs[mask] >= 0.5).astype(int) == truth[mask]).mean() * 100), int(mask.sum())
 
-    # ── Simulated strategy: buy when ensemble says Bullish, else hold cash ────
-    test_prices = test_df["Close"].values[:n]
-    strategy_returns = []
-    bah_returns      = []
-    for i in range(0, len(test_prices) - HORIZON, HORIZON):
-        entry  = test_prices[i]
-        exit_  = test_prices[min(i + HORIZON, len(test_prices) - 1)]
-        actual = (exit_ - entry) / entry * 100
+    # ── Daily strategy with three-layer signal filter ─────────────────────────
+    #
+    # Layer 1 — Asymmetric threshold
+    #   Go long  when prob  > BULL_THR (55%) — need real bullish conviction
+    #   Go cash  when prob  < BEAR_THR (43%) AND we're in a downtrend
+    #   Otherwise → hold current position (neutral zone = no churn)
+    #
+    # Layer 2 — Trend filter (200-day MA)
+    #   If price > 200MA we are in an uptrend. In an uptrend the model must
+    #   be MORE bearish (< BEAR_THR) before we exit to cash.
+    #
+    # Layer 3 — 2-day signal confirmation
+    #   A signal must persist for 2 consecutive days before we act on it.
+    #
+    BULL_THR     = 0.55
+    BEAR_THR     = 0.43
+    CONFIRM_DAYS = 2
 
-        if ens_p[i] >= 0.5:                      # model says Bullish → buy
-            strategy_returns.append(actual)
-        else:                                      # model says Bearish → cash
-            strategy_returns.append(0.0)
-        bah_returns.append(actual)                 # buy-and-hold always holds
+    test_prices = test_df["Close"].values[:n]
+    test_dates  = test_df.index[:n]
+
+    if "price_vs_ma200" in test_df.columns:
+        above_200ma = (test_df["price_vs_ma200"].values[:n] > 0)
+    else:
+        above_200ma = np.ones(n, dtype=bool)
+
+    def _date_str(d):
+        return str(d.date()) if hasattr(d, 'date') else str(d)[:10]
+
+    model_val    = 100.0
+    bah_val      = 100.0
+    in_position  = True
+    entry_price  = test_prices[0]
+    trade_returns: list[float] = []
+
+    pending_signal = True
+    pending_days   = 0
+
+    equity_curve = [{"date": _date_str(test_dates[0]), "model": 100.0, "buyAndHold": 100.0}]
+
+    for i in range(len(test_prices) - 1):
+        p          = float(ens_p[i])
+        in_uptrend = bool(above_200ma[i]) if i < len(above_200ma) else True
+
+        if p >= BULL_THR:
+            desired = True
+        elif p <= BEAR_THR and not in_uptrend:
+            desired = False
+        elif p <= BEAR_THR and in_uptrend:
+            desired = in_position
+        else:
+            desired = in_position
+
+        if desired == pending_signal:
+            pending_days += 1
+        else:
+            pending_signal = desired
+            pending_days   = 1
+
+        if pending_days >= CONFIRM_DAYS and desired != in_position:
+            if in_position and not desired:
+                trade_returns.append(
+                    (test_prices[i] - entry_price) / entry_price * 100
+                )
+            elif desired and not in_position:
+                entry_price = test_prices[i]
+            in_position = desired
+
+        day_ret_pct = (test_prices[i + 1] - test_prices[i]) / test_prices[i] * 100
+        sr          = day_ret_pct if in_position else 0.0
+
+        model_val *= (1 + sr          / 100)
+        bah_val   *= (1 + day_ret_pct / 100)
+
+        if i % 5 == 0 or i == len(test_prices) - 2:
+            equity_curve.append({
+                "date":       _date_str(test_dates[i + 1]),
+                "model":      round(float(model_val), 2),
+                "buyAndHold": round(float(bah_val), 2),
+            })
+
+    if in_position:
+        trade_returns.append(
+            (test_prices[-1] - entry_price) / entry_price * 100
+        )
+
+    n_trades = len(trade_returns)
+    win_rate = round(
+        sum(1 for r in trade_returns if r > 0) / max(1, n_trades) * 100, 1
+    )
 
     conf_acc, conf_n = _accuracy_when_confident(ens_p, y_true)
-
-    baseline_pct_up = float(y_true.mean() * 100)
-    test_start = str(test_df.index[0].date()) if hasattr(test_df.index[0], 'date') else str(test_df.index[0])[:10]
-    test_end   = str(test_df.index[-1].date()) if hasattr(test_df.index[-1], 'date') else str(test_df.index[-1])[:10]
+    baseline_pct_up  = float(y_true.mean() * 100)
+    test_start = _date_str(test_dates[0])
+    test_end   = _date_str(test_dates[-1])
 
     return {
         "ticker":     ticker,
@@ -680,17 +836,17 @@ def backtest(ticker: str) -> dict | None:
             "ensemble": round(_accuracy(ens_p,  y_true), 1),
         },
         "whenConfident": {
-            "threshold":  60,
-            "accuracy":   round(conf_acc, 1) if conf_acc is not None else None,
+            "threshold":    60,
+            "accuracy":     round(conf_acc, 1) if conf_acc is not None else None,
             "nPredictions": conf_n,
         },
         "simulatedStrategy": {
-            "followModel":  round(sum(strategy_returns), 1),
-            "buyAndHold":   round(sum(bah_returns), 1),
-            "nTrades":      sum(1 for r in strategy_returns if r != 0),
-            "winRate":      round(sum(1 for r in strategy_returns if r > 0) /
-                                  max(1, sum(1 for r in strategy_returns if r != 0)) * 100, 1),
+            "followModel": round(float(model_val), 1),
+            "buyAndHold":  round(float(bah_val),   1),
+            "nTrades":     n_trades,
+            "winRate":     win_rate,
         },
+        "equityCurve": equity_curve,
     }
 
 

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import NavBar from "@/components/NavBar";
+import MarketTicker from "@/components/MarketTicker";
 import { ThemeProvider } from "@/components/ThemeProvider";
 
 export const metadata: Metadata = {
@@ -23,6 +24,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="h-full flex flex-col" style={{ background: "var(--background)" }}>
         <ThemeProvider>
           <NavBar />
+          <MarketTicker />
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
             {children}
           </div>

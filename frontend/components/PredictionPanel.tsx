@@ -185,6 +185,12 @@ function SentimentBar({ positive, negative, neutral, total }: {
 
 // ── Backtest types ────────────────────────────────────────────────────────────
 
+interface EquityPoint {
+  date: string;
+  model: number;
+  buyAndHold: number;
+}
+
 interface BacktestData {
   ticker: string;
   testPeriod: { start: string; end: string; predictions: number };
@@ -192,6 +198,97 @@ interface BacktestData {
   accuracy: { xgboost: number; lstm: number | null; ensemble: number };
   whenConfident: { threshold: number; accuracy: number | null; nPredictions: number };
   simulatedStrategy: { followModel: number; buyAndHold: number; nTrades: number; winRate: number };
+  equityCurve: EquityPoint[];
+}
+
+function EquityCurveChart({ data }: { data: EquityPoint[] }) {
+  if (!data || data.length < 2) return null;
+
+  const VW = 400, VH = 140;
+  const pad = { top: 10, right: 10, bottom: 22, left: 40 };
+  const chartW = VW - pad.left - pad.right;
+  const chartH = VH - pad.top - pad.bottom;
+
+  const allVals = data.flatMap(d => [d.model, d.buyAndHold]);
+  const minV = Math.min(...allVals) * 0.97;
+  const maxV = Math.max(...allVals) * 1.02;
+
+  const xi = (i: number) => pad.left + (i / (data.length - 1)) * chartW;
+  const yi = (v: number) => pad.top + (1 - (v - minV) / (maxV - minV)) * chartH;
+
+  const modelPath  = data.map((d, i) => `${i === 0 ? "M" : "L"}${xi(i).toFixed(1)},${yi(d.model).toFixed(1)}`).join(" ");
+  const bahPath    = data.map((d, i) => `${i === 0 ? "M" : "L"}${xi(i).toFixed(1)},${yi(d.buyAndHold).toFixed(1)}`).join(" ");
+
+  const modelFinal = data[data.length - 1].model;
+  const bahFinal   = data[data.length - 1].buyAndHold;
+  const modelWon   = modelFinal >= bahFinal;
+  const modelColor = modelWon ? "#22c55e" : "#ef4444";
+
+  // Year labels — one per year, skip crowding
+  const yearLabels: { label: string; i: number }[] = [];
+  let lastYear = "";
+  data.forEach((d, i) => {
+    const yr = d.date.slice(0, 4);
+    if (yr !== lastYear) { yearLabels.push({ label: yr, i }); lastYear = yr; }
+  });
+
+  // Y-axis ticks
+  const yTicks = [minV, (minV + maxV) / 2, maxV];
+
+  return (
+    <div className="flex flex-col gap-2">
+      <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width: "100%", height: "auto" }}>
+        {/* Grid */}
+        {yTicks.map(v => (
+          <g key={v}>
+            <line x1={pad.left} y1={yi(v)} x2={VW - pad.right} y2={yi(v)}
+              stroke="var(--border)" strokeWidth="0.5" strokeDasharray="3,3" />
+            <text x={pad.left - 4} y={yi(v)} textAnchor="end" dominantBaseline="middle"
+              fontSize="8" fill="var(--muted)">${v.toFixed(0)}</text>
+          </g>
+        ))}
+
+        {/* $100 baseline */}
+        <line x1={pad.left} y1={yi(100)} x2={VW - pad.right} y2={yi(100)}
+          stroke="#94a3b8" strokeWidth="0.5" opacity="0.4" />
+
+        {/* Buy & hold */}
+        <path d={bahPath} fill="none" stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="4,2" />
+
+        {/* Model */}
+        <path d={modelPath} fill="none" stroke={modelColor} strokeWidth="2" />
+
+        {/* Year labels */}
+        {yearLabels.map(({ label, i }) => i > 0 && (
+          <text key={label} x={xi(i)} y={VH - 4} textAnchor="middle" fontSize="8" fill="var(--muted)">
+            {label}
+          </text>
+        ))}
+      </svg>
+
+      {/* Legend */}
+      <div className="flex gap-5 text-xs">
+        <div className="flex items-center gap-1.5">
+          <div className="w-5 h-0.5 rounded" style={{ background: modelColor }} />
+          <span style={{ color: "var(--muted)" }}>
+            Follow model →{" "}
+            <span className="font-bold tabular-nums" style={{ color: modelColor }}>
+              ${modelFinal.toFixed(0)}
+            </span>
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div className="w-5 h-px rounded" style={{ background: "#94a3b8" }} />
+          <span style={{ color: "var(--muted)" }}>
+            Buy &amp; hold →{" "}
+            <span className="font-bold tabular-nums" style={{ color: "#94a3b8" }}>
+              ${bahFinal.toFixed(0)}
+            </span>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function AccuracyBar({ label, value, baseline, color }: {
@@ -336,27 +433,30 @@ function BacktestPanel({ ticker }: { ticker: string }) {
         </div>
       )}
 
-      {/* Simulated strategy */}
+      {/* Equity curve */}
       <div className="flex flex-col gap-2">
         <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: "var(--muted2)" }}>
-          Simulated 30-day strategy
+          $100 invested at start of test period
         </p>
-        <div className="grid grid-cols-2 gap-2">
-          {[
-            { label: "Follow model", value: simulatedStrategy.followModel, sub: `${simulatedStrategy.nTrades} trades · ${simulatedStrategy.winRate}% win rate` },
-            { label: "Buy & Hold", value: simulatedStrategy.buyAndHold, sub: "always invested" },
-          ].map(({ label, value, sub }) => (
-            <div key={label} className="rounded-lg p-3 flex flex-col gap-0.5"
-              style={{ background: "var(--surface2)", border: "1px solid var(--border)" }}>
-              <span className="text-xs" style={{ color: "var(--muted)" }}>{label}</span>
-              <span className="text-xl font-black tabular-nums"
-                style={{ color: value >= 0 ? "#22c55e" : "#ef4444" }}>
-                {value >= 0 ? "+" : ""}{value.toFixed(1)}%
-              </span>
-              <span className="text-xs" style={{ color: "var(--muted)" }}>{sub}</span>
-            </div>
-          ))}
-        </div>
+        <EquityCurveChart data={data.equityCurve} />
+      </div>
+
+      {/* Simulated strategy stats */}
+      <div className="grid grid-cols-2 gap-2">
+        {[
+          { label: "Follow model", value: simulatedStrategy.followModel, sub: `${simulatedStrategy.nTrades} trades · ${simulatedStrategy.winRate}% win rate` },
+          { label: "Buy & Hold",   value: simulatedStrategy.buyAndHold,  sub: "always invested" },
+        ].map(({ label, value, sub }) => (
+          <div key={label} className="rounded-lg p-3 flex flex-col gap-0.5"
+            style={{ background: "var(--surface2)", border: "1px solid var(--border)" }}>
+            <span className="text-xs" style={{ color: "var(--muted)" }}>{label}</span>
+            <span className="text-xl font-black tabular-nums"
+              style={{ color: value >= 100 ? "#22c55e" : "#ef4444" }}>
+              ${value.toFixed(0)}
+            </span>
+            <span className="text-xs" style={{ color: "var(--muted)" }}>{sub}</span>
+          </div>
+        ))}
       </div>
 
       <p className="text-xs" style={{ color: "var(--muted)" }}>
@@ -401,7 +501,7 @@ export default function PredictionPanel({ ticker }: { ticker: string }) {
         <div className="w-10 h-10 rounded-full border-2 border-t-transparent animate-spin"
           style={{ borderColor: "var(--accent)", borderTopColor: "transparent" }} />
         <div className="text-sm" style={{ color: "var(--muted)" }}>
-          Training ML model on 3 years of data…
+          Training ML model on full available history…
         </div>
       </div>
     );
