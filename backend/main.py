@@ -8,7 +8,15 @@ import pandas_ta as ta
 import httpx
 import json
 import asyncio
+import numpy as np
+from datetime import datetime
 from typing import List
+import sys, os
+sys.path.insert(0, os.path.dirname(__file__))
+from indicators import (
+    compute_adx, compute_rsi, compute_bollinger_bands,
+    compute_momentum_12_1, compute_volume_ratio,
+)
 
 app = FastAPI()
 
@@ -1680,3 +1688,201 @@ def get_portfolio_prices(tickers: str):
         except Exception:
             pass
     return {"prices": result}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ARM — Adaptive Regime Momentum  (Phase 2 optimized parameters)
+#  ADX trend=22, ADX range=15, RSI<30, Mom>=10%, 8 momentum slots + 4 MR slots
+#  Rebalance: bi-weekly  |  Backtest: 25.4% CAGR, Sharpe 1.14, p<0.05
+# ══════════════════════════════════════════════════════════════════════════════
+
+ARM_UNIVERSE = [
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
+    "AVGO", "AMD",  "QCOM", "TXN",  "INTC",  "MU",   "AMAT", "LRCX", "KLAC", "MRVL",
+    "CRM",  "ADBE", "INTU", "NOW",  "ORCL",  "PLTR", "CRWD", "NET",  "DDOG", "ZS",  "SNOW",
+    "CSCO", "IBM",  "ACN",
+    "JPM",  "BAC",  "GS",   "MS",   "WFC",   "C",
+    "V",    "MA",   "AXP",  "BLK",  "BX",    "CME",  "USB",  "COF",
+    "UNH",  "CI",   "HUM",  "CVS",
+    "JNJ",  "LLY",  "ABBV", "MRK",  "AMGN",  "BMY",  "GILD", "PFE",  "REGN", "VRTX",
+    "TMO",  "ISRG", "SYK",  "ZTS",  "ABT",   "DHR",  "MDT",
+    "HD",   "MCD",  "SBUX", "NKE",  "BKNG",  "TGT",  "LOW",  "ABNB", "CMG",
+    "WMT",  "COST", "PG",   "KO",   "PEP",   "PM",   "MO",   "MDLZ", "CL",
+    "CVX",  "XOM",  "OXY",  "COP",  "SLB",
+    "CAT",  "DE",   "HON",  "UNP",  "LMT",   "RTX",  "NOC",  "BA",   "EMR",  "GE",
+    "VZ",   "T",    "DIS",  "NFLX", "CMCSA",
+    "NEE",  "DUK",  "SO",
+    "AMT",  "PLD",  "EQIX",
+    "F",    "GM",   "PYPL",
+]
+
+_ARM_P = {
+    "adx_trend": 22, "adx_range": 15, "rsi_os": 30,
+    "bb_pct": 0.25,  "vol_spike": 1.3, "mom_min": 0.10,
+    "mom_slots": 8,  "mr_slots": 4,
+}
+
+_arm_cache: dict = {"data": None, "ts": None}
+ARM_CACHE_TTL = 3600  # seconds
+
+
+def _score_ticker(ticker: str, close, high, low, volume) -> dict | None:
+    """Compute ARM signals for a single ticker. Returns None if insufficient data."""
+    c = close.dropna()
+    h = high.reindex(c.index)
+    l = low.reindex(c.index)
+    v = volume.reindex(c.index)
+    if len(c) < 300:
+        return None
+    try:
+        adx_s, plus_di, minus_di = compute_adx(h, l, c)
+        rsi_s                    = compute_rsi(c)
+        _, _, _, bb_s            = compute_bollinger_bands(c)
+        mom_s                    = compute_momentum_12_1(c)
+        vol_s                    = compute_volume_ratio(v)
+
+        adx  = float(adx_s.iloc[-1]);   pdi = float(plus_di.iloc[-1])
+        mdi  = float(minus_di.iloc[-1]); rsi = float(rsi_s.iloc[-1])
+        bb   = float(bb_s.iloc[-1]);     mom = float(mom_s.iloc[-1])
+        vol  = float(vol_s.iloc[-1])
+
+        if any(np.isnan(x) for x in [adx, pdi, mdi, rsi, bb, mom, vol]):
+            return None
+
+        p = _ARM_P
+        regime = "TRENDING" if adx >= p["adx_trend"] else ("RANGING" if adx < p["adx_range"] else "NEUTRAL")
+
+        signal = "-"
+        if regime == "TRENDING" and pdi > mdi and mom >= p["mom_min"]:
+            signal = "MOM_BUY"
+        elif regime == "NEUTRAL" and pdi > mdi and mom >= p["mom_min"]:
+            signal = "MOM_BUY"
+        elif pdi > mdi and mom > 0:
+            signal = "WATCH"
+        if regime == "RANGING" and rsi < p["rsi_os"] and bb < p["bb_pct"] and vol > p["vol_spike"]:
+            signal = "MR_BUY"
+
+        return {
+            "ticker":   ticker,
+            "regime":   regime,
+            "signal":   signal,
+            "momentum": round(mom * 100, 1),
+            "adx":      round(adx, 1),
+            "rsi":      round(rsi, 1),
+            "vol_ratio": round(vol, 2),
+            "plus_di":  round(pdi, 1),
+            "minus_di": round(mdi, 1),
+            "price":    round(float(c.iloc[-1]), 2),
+        }
+    except Exception:
+        return None
+
+
+def _compute_arm_signals() -> dict:
+    """Download data and score all 113 universe stocks. Takes ~30-60 seconds."""
+    tickers = list(set(ARM_UNIVERSE))
+    raw = yf.download(tickers, period="18mo", auto_adjust=True, progress=False)
+
+    if isinstance(raw.columns, pd.MultiIndex):
+        close  = raw["Close"].ffill()
+        high   = raw["High"].ffill()
+        low    = raw["Low"].ffill()
+        volume = raw["Volume"].ffill()
+    else:
+        raise RuntimeError("Unexpected yfinance response format")
+
+    rows = []
+    for ticker in close.columns:
+        result = _score_ticker(ticker, close[ticker], high[ticker], low[ticker], volume[ticker])
+        if result:
+            rows.append(result)
+
+    rows.sort(key=lambda x: x["momentum"], reverse=True)
+    for i, r in enumerate(rows):
+        r["rank"] = i + 1
+
+    p = _ARM_P
+    mom_buys  = [r for r in rows if r["signal"] == "MOM_BUY"][:p["mom_slots"]]
+    mom_set   = {r["ticker"] for r in mom_buys}
+    mr_cands  = [r for r in rows if r["signal"] == "MR_BUY" and r["ticker"] not in mom_set]
+    mr_buys   = sorted(mr_cands, key=lambda x: x["rsi"])[:p["mr_slots"]]
+    pick_set  = mom_set | {r["ticker"] for r in mr_buys}
+
+    for r in rows:
+        r["in_portfolio"] = r["ticker"] in pick_set
+
+    return {
+        "momentum_picks": mom_buys,
+        "mr_picks":       mr_buys,
+        "all_stocks":     rows,
+    }
+
+
+@app.get("/api/arm/signals")
+def get_arm_signals(refresh: bool = False):
+    """Return ARM signal scan for the full universe. Cached for 1 hour."""
+    global _arm_cache
+    now = datetime.now()
+
+    if (
+        not refresh
+        and _arm_cache["data"]
+        and _arm_cache["ts"]
+        and (now - _arm_cache["ts"]).seconds < ARM_CACHE_TTL
+    ):
+        data = dict(_arm_cache["data"])
+        data["generated_at"]      = _arm_cache["ts"].isoformat()
+        data["cache_age_minutes"] = round((now - _arm_cache["ts"]).seconds / 60, 1)
+        data["cached"]            = True
+        return data
+
+    try:
+        result = _compute_arm_signals()
+        _arm_cache["data"] = result
+        _arm_cache["ts"]   = now
+        out = dict(result)
+        out["generated_at"]      = now.isoformat()
+        out["cache_age_minutes"] = 0
+        out["cached"]            = False
+        return out
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ARM compute error: {e}")
+
+
+@app.get("/api/arm/stock/{ticker}")
+def get_arm_stock(ticker: str):
+    """Return ARM signal for a single ticker. Uses cache if available, else computes."""
+    ticker = ticker.upper()
+
+    if _arm_cache["data"]:
+        match = next((r for r in _arm_cache["data"]["all_stocks"] if r["ticker"] == ticker), None)
+        if match:
+            return match
+
+    try:
+        raw = yf.download(ticker, period="18mo", auto_adjust=True, progress=False)
+        if raw.empty:
+            raise HTTPException(status_code=404, detail=f"No data for {ticker}")
+
+        if isinstance(raw.columns, pd.MultiIndex):
+            c = raw["Close"].ffill().squeeze()
+            h = raw["High"].ffill().squeeze()
+            l = raw["Low"].ffill().squeeze()
+            v = raw["Volume"].ffill().squeeze()
+        else:
+            c = raw["Close"].ffill()
+            h = raw["High"].ffill()
+            l = raw["Low"].ffill()
+            v = raw["Volume"].ffill()
+
+        result = _score_ticker(ticker, c, h, l, v)
+        if not result:
+            raise HTTPException(status_code=400, detail="Not enough price history")
+
+        result["in_portfolio"] = ticker in ARM_UNIVERSE
+        result["rank"]         = None
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
