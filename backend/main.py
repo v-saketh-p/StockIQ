@@ -9,7 +9,8 @@ import httpx
 import json
 import asyncio
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import List
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
@@ -1592,8 +1593,30 @@ _ARM_P = {
     "mom_slots": 8,  "mr_slots": 4,
 }
 
-_arm_cache: dict = {"data": None, "ts": None}
-ARM_CACHE_TTL = 3600  # seconds
+ARM_SNAPSHOT_FILE = Path(__file__).parent / "arm_snapshot.json"
+
+def _business_days_since(date_str: str) -> int:
+    from_date = datetime.fromisoformat(date_str).date()
+    today = datetime.now().date()
+    if today <= from_date:
+        return 0
+    return len(pd.bdate_range(from_date + timedelta(days=1), today))
+
+def _next_rebalance_date(from_date_str: str) -> str:
+    from_date = datetime.fromisoformat(from_date_str).date()
+    return pd.bdate_range(from_date, periods=11)[10].date().isoformat()
+
+def _load_snapshot() -> dict | None:
+    if ARM_SNAPSHOT_FILE.exists():
+        with open(ARM_SNAPSHOT_FILE) as f:
+            return json.load(f)
+    return None
+
+def _save_snapshot(data: dict, rebalance_date: str) -> None:
+    payload = dict(data)
+    payload["rebalance_date"] = rebalance_date
+    with open(ARM_SNAPSHOT_FILE, "w") as f:
+        json.dump(payload, f)
 
 
 def _score_ticker(ticker: str, close, high, low, volume) -> dict | None:
@@ -1690,28 +1713,29 @@ def _compute_arm_signals() -> dict:
 
 @app.get("/api/arm/signals")
 def get_arm_signals(refresh: bool = False):
-    """Return ARM signal scan for the full universe. Cached for 1 hour."""
-    global _arm_cache
-    now = datetime.now()
+    """Return ARM picks locked to bi-weekly (10 trading day) rebalance schedule."""
+    snapshot = _load_snapshot()
+    today_str = datetime.now().date().isoformat()
 
-    if (
-        not refresh
-        and _arm_cache["data"]
-        and _arm_cache["ts"]
-        and (now - _arm_cache["ts"]).seconds < ARM_CACHE_TTL
-    ):
-        data = dict(_arm_cache["data"])
-        data["generated_at"]      = _arm_cache["ts"].isoformat()
-        data["cache_age_minutes"] = round((now - _arm_cache["ts"]).seconds / 60, 1)
-        data["cached"]            = True
-        return data
+    if snapshot and not refresh:
+        last_rebalance = snapshot.get("rebalance_date", "")
+        if last_rebalance and _business_days_since(last_rebalance) < 10:
+            days_left = 10 - _business_days_since(last_rebalance)
+            snapshot["last_rebalance"] = last_rebalance
+            snapshot["next_rebalance"] = _next_rebalance_date(last_rebalance)
+            snapshot["days_remaining"] = days_left
+            snapshot["locked"]         = True
+            return snapshot
 
     try:
         result = _compute_arm_signals()
-        _arm_cache["data"] = result
-        _arm_cache["ts"]   = now
+        _save_snapshot(result, today_str)
         out = dict(result)
-        out["generated_at"]      = now.isoformat()
+        out["last_rebalance"]    = today_str
+        out["next_rebalance"]    = _next_rebalance_date(today_str)
+        out["days_remaining"]    = 10
+        out["locked"]            = False
+        out["generated_at"]      = today_str
         out["cache_age_minutes"] = 0
         out["cached"]            = False
         return out
@@ -1724,8 +1748,9 @@ def get_arm_stock(ticker: str):
     """Return ARM signal for a single ticker. Uses cache if available, else computes."""
     ticker = ticker.upper()
 
-    if _arm_cache["data"]:
-        match = next((r for r in _arm_cache["data"]["all_stocks"] if r["ticker"] == ticker), None)
+    snapshot = _load_snapshot()
+    if snapshot:
+        match = next((r for r in snapshot.get("all_stocks", []) if r["ticker"] == ticker), None)
         if match:
             return match
 

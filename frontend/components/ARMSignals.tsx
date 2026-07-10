@@ -25,6 +25,10 @@ interface ArmData {
   generated_at:      string;
   cache_age_minutes: number;
   cached:            boolean;
+  last_rebalance:    string;
+  next_rebalance:    string;
+  days_remaining:    number;
+  locked:            boolean;
 }
 
 const REGIME_COLOR: Record<string, string> = {
@@ -176,21 +180,21 @@ export default function ARMSignals({ onSelectTicker }: { onSelectTicker: (t: str
             </p>
             {data && (
               <p className="text-xs" style={{ color: "var(--muted2)" }}>
-                {data.cached
-                  ? `Cached ${data.cache_age_minutes}m ago · `
-                  : "Fresh scan · "}
-                {new Date(data.generated_at).toLocaleString()}
+                {data.locked
+                  ? `Locked · next rebalance ${new Date(data.next_rebalance + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })} · ${data.days_remaining} trading days left`
+                  : `Rebalanced today · next in 10 trading days`}
               </p>
             )}
           </div>
           <button
             onClick={() => fetchSignals(true)}
-            disabled={loading}
-            className="flex items-center gap-2 text-xs px-4 py-2 rounded-lg font-semibold transition-all hover:opacity-80 disabled:opacity-40"
+            disabled={loading || (data?.locked ?? false)}
+            title={data?.locked ? `Locked until ${data?.next_rebalance}` : "Force refresh"}
+            className="flex items-center gap-2 text-xs px-4 py-2 rounded-lg font-semibold transition-all hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed"
             style={{ background: "rgba(16,185,129,0.12)", color: "#10b981", border: "1px solid rgba(16,185,129,0.25)" }}
           >
             <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
-            {loading ? "Scanning..." : "Refresh"}
+            {loading ? "Scanning..." : data?.locked ? "Locked" : "Refresh"}
           </button>
         </div>
       </div>
