@@ -6,6 +6,7 @@ import StockDashboard from "@/components/StockDashboard";
 import Watchlist, { WatchlistGroup } from "@/components/Watchlist";
 import PortfolioTracker from "@/components/PortfolioTracker";
 import ARMSignals from "@/components/ARMSignals";
+import ARMTracker from "@/components/ARMTracker";
 import { BarChart2, Briefcase, Zap } from "lucide-react";
 
 function genId() {
@@ -21,6 +22,7 @@ export default function Home() {
   const [watchlists,   setWatchlists]   = useState<WatchlistGroup[]>(DEFAULT_WATCHLISTS);
   const [activeListId, setActiveListId] = useState<string>("default");
   const [view,         setView]         = useState<"research" | "portfolio" | "arm">("research");
+  const [armTab,       setArmTab]       = useState<"scanner" | "tracker">("scanner");
 
   // Load from localStorage after mount
   useEffect(() => {
@@ -140,7 +142,25 @@ export default function Home() {
 
         <div className="flex-1 overflow-y-auto p-6" data-scroll>
           {view === "arm" ? (
-            <ARMSignals onSelectTicker={t => { setTicker(t); setView("research"); }} />
+            <div className="flex flex-col gap-5">
+              {/* ARM sub-tabs */}
+              <div className="flex gap-1 p-1 rounded-xl self-start"
+                style={{ background: "var(--surface2)", border: "1px solid var(--border)" }}>
+                {(["scanner", "tracker"] as const).map(tab => (
+                  <button key={tab} onClick={() => setArmTab(tab)}
+                    className="px-4 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                    style={armTab === tab
+                      ? { background: "var(--surface)", color: "var(--text)", boxShadow: "0 1px 3px var(--shadow)" }
+                      : { color: "var(--muted2)" }}>
+                    {tab === "scanner" ? "Scanner" : "Tracker"}
+                  </button>
+                ))}
+              </div>
+              {armTab === "scanner"
+                ? <ARMSignals onSelectTicker={t => { setTicker(t); setView("research"); }} />
+                : <ARMTracker onSelectTicker={t => { setTicker(t); setView("research"); }} />
+              }
+            </div>
           ) : view === "portfolio" ? (
             <PortfolioTracker onSelectTicker={t => { setTicker(t); setView("research"); }} />
           ) : ticker ? (

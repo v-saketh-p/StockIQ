@@ -1991,6 +1991,97 @@ def get_arm_signals(refresh: bool = False):
         raise HTTPException(status_code=500, detail=f"ARM compute error: {e}")
 
 
+@app.get("/api/arm/performance")
+def get_arm_performance():
+    """Track equal-weight ARM portfolio performance vs SPY since last rebalance."""
+    snapshot = _load_snapshot()
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="No ARM snapshot found — open the ARM scanner first to generate picks.")
+
+    rebalance_date = snapshot.get("rebalance_date")
+    if not rebalance_date:
+        raise HTTPException(status_code=422, detail="Snapshot is missing a rebalance date.")
+
+    picks = snapshot.get("momentum_picks", []) + snapshot.get("mr_picks", [])
+    if not picks:
+        raise HTTPException(status_code=422, detail="No picks in current snapshot.")
+
+    tickers  = [p["ticker"] for p in picks]
+    fetch_syms = list(set(tickers + ["SPY"]))
+    end_str  = (datetime.now().date() + timedelta(days=1)).isoformat()
+
+    raw = yf.download(fetch_syms, start=rebalance_date, end=end_str, auto_adjust=True, progress=False)
+    if raw.empty:
+        raise HTTPException(status_code=422, detail="No price data returned from market data provider.")
+    if not isinstance(raw.columns, pd.MultiIndex):
+        raise HTTPException(status_code=500, detail="Unexpected price data format.")
+
+    close = raw["Close"].ffill()
+    pick_meta = {p["ticker"]: p for p in picks}
+
+    # Per-pick stats
+    pick_stats: list[dict] = []
+    available:  list[str]  = []
+    for t in tickers:
+        if t not in close.columns:
+            continue
+        series = close[t].dropna()
+        if series.empty:
+            continue
+        entry   = float(series.iloc[0])
+        current = float(series.iloc[-1])
+        p = pick_meta[t]
+        pick_stats.append({
+            "ticker":        t,
+            "signal":        p["signal"],
+            "regime":        p["regime"],
+            "entry_price":   round(entry, 2),
+            "current_price": round(current, 2),
+            "return_pct":    round((current / entry - 1) * 100, 2),
+            "momentum":      p.get("momentum"),
+        })
+        available.append(t)
+
+    if not available:
+        raise HTTPException(status_code=422, detail="No price data available for current picks.")
+
+    # Equal-weight portfolio NAV — normalise each stock to its own entry price
+    pick_close   = close[available].ffill()
+    entry_prices = pick_close.bfill().iloc[0]
+    normalized   = pick_close.div(entry_prices)
+    port_nav     = normalized.mean(axis=1, skipna=True).dropna()
+
+    # SPY benchmark
+    spy       = close["SPY"].dropna() if "SPY" in close.columns else None
+    spy_entry = float(spy.iloc[0]) if spy is not None and not spy.empty else None
+
+    chart = []
+    for date, nav_val in port_nav.items():
+        point: dict = {
+            "date": date.strftime("%Y-%m-%d"),
+            "arm":  round((float(nav_val) - 1) * 100, 2),
+        }
+        if spy is not None and spy_entry and date in spy.index:
+            point["spy"] = round((float(spy.loc[date]) / spy_entry - 1) * 100, 2)
+        chart.append(point)
+
+    port_return = round((float(port_nav.iloc[-1]) - 1) * 100, 2)
+    spy_return  = round((float(spy.iloc[-1]) / spy_entry - 1) * 100, 2) if spy is not None and spy_entry else None
+    alpha       = round(port_return - spy_return, 2) if spy_return is not None else None
+
+    return {
+        "rebalance_date":   rebalance_date,
+        "next_rebalance":   _next_rebalance_date(rebalance_date),
+        "days_held":        _business_days_since(rebalance_date),
+        "days_remaining":   max(0, 10 - _business_days_since(rebalance_date)),
+        "portfolio_return": port_return,
+        "spy_return":       spy_return,
+        "alpha":            alpha,
+        "picks":            pick_stats,
+        "chart":            chart,
+    }
+
+
 @app.get("/api/arm/stock/{ticker}")
 def get_arm_stock(ticker: str):
     """Return ARM signal for a single ticker. Uses cache if available, else computes."""
