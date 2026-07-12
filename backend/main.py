@@ -2006,11 +2006,17 @@ def get_arm_performance():
     if not picks:
         raise HTTPException(status_code=422, detail="No picks in current snapshot.")
 
-    tickers  = [p["ticker"] for p in picks]
+    tickers    = [p["ticker"] for p in picks]
     fetch_syms = list(set(tickers + ["SPY"]))
-    end_str  = (datetime.now().date() + timedelta(days=1)).isoformat()
 
-    raw = yf.download(fetch_syms, start=rebalance_date, end=end_str, auto_adjust=True, progress=False)
+    # Snap rebalance_date back to the nearest prior business day so weekend/holiday
+    # scans don't produce an empty download (markets are closed on those days).
+    rebalance_dt = datetime.fromisoformat(rebalance_date).date()
+    eff_bdays    = pd.bdate_range(end=rebalance_dt, periods=1)
+    eff_start    = eff_bdays[0].date().isoformat() if len(eff_bdays) else rebalance_date
+    end_str      = (datetime.now().date() + timedelta(days=1)).isoformat()
+
+    raw = yf.download(fetch_syms, start=eff_start, end=end_str, auto_adjust=True, progress=False)
     if raw.empty:
         raise HTTPException(status_code=422, detail="No price data returned from market data provider.")
     if not isinstance(raw.columns, pd.MultiIndex):
