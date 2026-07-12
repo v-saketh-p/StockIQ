@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { TrendingUp, TrendingDown, Plus, RefreshCw, MessageSquare, X,
-         DollarSign, BarChart2, Activity, Layers, Sparkles, Zap } from "lucide-react";
+         DollarSign, BarChart2, Activity, Layers, Sparkles, Brain, Zap } from "lucide-react";
 import PriceChart from "./PriceChart";
 import MetricCard from "./MetricCard";
 import TechnicalGauge from "./TechnicalGauge";
@@ -11,6 +11,7 @@ import ChatPanel from "./ChatPanel";
 import FinancialCharts from "./FinancialCharts";
 import DCFModel from "./DCFModel";
 import CompsTable from "./CompsTable";
+import PredictionPanel from "./PredictionPanel";
 
 interface StockData {
   ticker: string;
@@ -107,7 +108,7 @@ export default function StockDashboard({
   const [loading,   setLoading]   = useState(false);
   const [error,     setError]     = useState<string | null>(null);
   const [chatOpen,  setChatOpen]  = useState(false);
-  const [activeTab, setActiveTab] = useState<"overview" | "dcf" | "comps" | "research">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "dcf" | "comps" | "research" | "prediction">("overview");
   const [armStock,  setArmStock]  = useState<{
     regime: string; signal: string; momentum: number; adx: number; rsi: number;
     plus_di: number; minus_di: number; in_portfolio: boolean;
@@ -302,10 +303,11 @@ export default function StockDashboard({
       <div className="flex gap-1 p-1 rounded-xl"
         style={{ background: "var(--surface2)", border: "1px solid var(--border)" }}>
         {([
-          { id: "overview",  label: "Overview",    icon: <BarChart2 size={12} /> },
-          { id: "dcf",       label: "DCF Model",   icon: <DollarSign size={12} /> },
-          { id: "comps",     label: "Comps",       icon: <Layers size={12} /> },
-          { id: "research",  label: "AI Research", icon: <Sparkles  size={12} /> },
+          { id: "overview",    label: "Overview",    icon: <BarChart2 size={12} /> },
+          { id: "dcf",         label: "DCF Model",   icon: <DollarSign size={12} /> },
+          { id: "comps",       label: "Comps",       icon: <Layers size={12} /> },
+          { id: "research",    label: "AI Research", icon: <Sparkles  size={12} /> },
+          { id: "prediction",  label: "ML Predict",  icon: <Brain     size={12} /> },
         ] as const).map(tab => (
           <button key={tab.id}
             onClick={() => setActiveTab(tab.id)}
@@ -434,6 +436,10 @@ export default function StockDashboard({
       <div style={{ display: activeTab === "research" ? "block" : "none" }}>
         <AIReport ticker={data.ticker} autoTrigger={activeTab === "research"} />
       </div>
+
+      {activeTab === "prediction" && (
+        <PredictionPanel ticker={data.ticker} />
+      )}
 
     </div>
 

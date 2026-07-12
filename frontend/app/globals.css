@@ -2,12 +2,12 @@
 
 /* ── Dark theme (default) ── */
 :root, [data-theme="dark"] {
-  --background: #08080e;
-  --surface:    #0d0d16;
-  --surface2:   #13131e;
-  --surface3:   #1a1a28;
-  --border:     #20202e;
-  --border2:    #2a2a3e;
+  --background: #000000;
+  --surface:    #0a0a0a;
+  --surface2:   #111111;
+  --surface3:   #1a1a1a;
+  --border:     #222222;
+  --border2:    #2e2e2e;
   --text:       #eaeaf4;
   --muted:      #60607a;
   --muted2:     #8888a8;
@@ -43,6 +43,7 @@
 * { box-sizing: border-box; }
 
 body {
+  overflow-x: hidden; /* prevent ticker's wide content from expanding the page */
   background: var(--background);
   color: var(--text);
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -58,3 +59,7 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+/* ── Market ticker ── */
+.ticker-viewport          { cursor: grab; }
+.ticker-viewport:active   { cursor: grabbing; }
