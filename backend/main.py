@@ -1714,59 +1714,6 @@ def get_market_indices():
     return results
 
 
-# ── ML Backtest endpoint ──────────────────────────────────────────────────────
-@app.get("/api/stock/{ticker}/backtest")
-async def get_backtest(ticker: str):
-    from ml_predictor import backtest
-    ticker = ticker.upper()
-    try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(backtest, ticker),
-            timeout=300.0,
-        )
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Backtest timed out — try again")
-    if result is None:
-        raise HTTPException(status_code=400, detail="Not enough data to run backtest")
-    return result
-
-
-# ── ML Prediction endpoint ────────────────────────────────────────────────────
-@app.get("/api/stock/{ticker}/prediction")
-async def get_prediction(ticker: str):
-    from ml_predictor import train_and_predict, get_news_sentiment, blend_prediction
-    ticker = ticker.upper()
-    try:
-        prediction = await asyncio.wait_for(
-            asyncio.to_thread(train_and_predict, ticker),
-            timeout=300.0,
-        )
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Prediction timed out — try again")
-    if prediction is None:
-        raise HTTPException(status_code=400, detail="Needs at least 7 months of price history — very new IPOs may not have enough data yet")
-
-    company_name = ""
-    try:
-        company_name = yf.Ticker(ticker).info.get("longName") or yf.Ticker(ticker).info.get("shortName") or ""
-    except Exception:
-        pass
-
-    try:
-        sentiment = await asyncio.wait_for(
-            asyncio.to_thread(get_news_sentiment, ticker, company_name),
-            timeout=30.0,
-        )
-    except asyncio.TimeoutError:
-        sentiment = {
-            "averageScore": 0.0, "sentimentLabel": "Neutral", "articleCount": 0,
-            "headlines": [], "positiveCount": 0, "negativeCount": 0, "neutralCount": 0,
-            "sources": {},
-        }
-
-    return blend_prediction(prediction, sentiment)
-
-
 # ── Portfolio batch-price endpoint ────────────────────────────────────────────
 @app.get("/api/fx/usdgbp")
 def get_fx_usdgbp():

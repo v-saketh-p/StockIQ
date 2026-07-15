@@ -5,10 +5,6 @@ pandas
 pandas-ta
 numpy
 httpx
-torch
-xgboost
-scikit-learn
-transformers
 anthropic
 newsapi-python
 praw
