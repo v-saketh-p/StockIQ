@@ -952,10 +952,21 @@ async def get_comps(ticker: str):
         def pct(v): return f"{round(v * 100, 2)}%" if v is not None else "N/A"
         def bn(v): return f"${v / 1e9:.2f}B" if v is not None else "N/A"
 
+        # Resolve peers using same priority as comps-data endpoint
+        industry_t = info.get("industry", "")
+        sector_t   = info.get("sector", "")
+        if t_upper in TICKER_PEERS:
+            resolved_peers = TICKER_PEERS[t_upper]
+        elif industry_t in PEER_UNIVERSE:
+            resolved_peers = [p for p in PEER_UNIVERSE[industry_t] if p != t_upper]
+        else:
+            resolved_peers = []
+        peer_hint = f"Focus your analysis on these peers: {', '.join(resolved_peers[:6])}" if resolved_peers else "Select the 5–6 most relevant public peers."
+
         return f"""You are a Wall Street equity research analyst specializing in comparable companies analysis. Analyze {t_upper} ({info.get('longName', t_upper)}) against its public peers.
 
 TARGET COMPANY — {t_upper}:
-Sector: {info.get('sector', 'N/A')} | Industry: {info.get('industry', 'N/A')}
+Sector: {sector_t or 'N/A'} | Industry: {industry_t or 'N/A'}
 Current Price: ${price} | Market Cap: {bn(safe(info.get('marketCap')))}
 Revenue (TTM): {bn(safe(info.get('totalRevenue')))}
 P/E (Trailing): {num(safe(info.get('trailingPE')))} | P/E (Forward): {num(safe(info.get('forwardPE')))}
@@ -963,6 +974,8 @@ EV/EBITDA: {num(safe(info.get('enterpriseToEbitda')))} | EV/Revenue: {num(safe(i
 Gross Margin: {pct(safe(info.get('grossMargins')))} | Operating Margin: {pct(safe(info.get('operatingMargins')))} | Net Margin: {pct(safe(info.get('profitMargins')))}
 Revenue Growth: {pct(safe(info.get('revenueGrowth')))} | EPS Growth: {pct(safe(info.get('earningsGrowth')))}
 ROE: {pct(safe(info.get('returnOnEquity')))} | Debt/Equity: {num(safe(info.get('debtToEquity')))} | FCF: {bn(safe(info.get('freeCashflow')))}
+
+{peer_hint}
 
 Write a professional comparable companies analysis with these exact sections:
 
@@ -1148,38 +1161,151 @@ Be direct, opinionated, and specific with numbers throughout. Use markdown forma
     return StreamingResponse(ollama_stream_async(prompt), media_type="text/event-stream")
 
 
+# ── Ticker-specific peer overrides (checked before industry lookup) ────────────
+TICKER_PEERS: dict[str, list[str]] = {
+    # Mega-cap platform / ecosystem
+    "AAPL":  ["MSFT","GOOGL","AMZN","META","SONY"],
+    "MSFT":  ["AAPL","GOOGL","AMZN","ORCL","CRM"],
+    "GOOGL": ["META","MSFT","AMZN","SNAP","PINS"],
+    "GOOG":  ["META","MSFT","AMZN","SNAP","PINS"],
+    "META":  ["GOOGL","SNAP","PINS","RDDT","NFLX"],
+    "AMZN":  ["MSFT","GOOGL","WMT","BABA","COST"],
+    # Semiconductors
+    "NVDA":  ["AMD","INTC","QCOM","AVGO","MRVL"],
+    "AMD":   ["NVDA","INTC","QCOM","AVGO","MRVL"],
+    "INTC":  ["AMD","NVDA","QCOM","AVGO","TXN"],
+    "QCOM":  ["AVGO","MRVL","NXPI","AMD","INTC"],
+    "AVGO":  ["QCOM","MRVL","TXN","NXPI","ADI"],
+    "MRVL":  ["AVGO","QCOM","NXPI","ADI","SLAB"],
+    "MU":    ["WDC","STX","SNDK","NVDA","AVGO"],
+    "TXN":   ["ADI","ON","MCHP","NXPI","SLAB"],
+    "ADI":   ["TXN","ON","MCHP","NXPI","SLAB"],
+    "ON":    ["TXN","ADI","MCHP","NXPI","STM"],
+    "MCHP":  ["TXN","ADI","ON","NXPI","SLAB"],
+    "NXPI":  ["QCOM","TXN","ADI","ON","MCHP"],
+    # Semiconductor equipment
+    "AMAT":  ["LRCX","KLAC","ASML","ONTO","ENTG"],
+    "LRCX":  ["AMAT","KLAC","ASML","ONTO","ENTG"],
+    "KLAC":  ["AMAT","LRCX","ASML","ONTO","ENTG"],
+    # Data storage
+    "WDC":   ["STX","SNDK","MU","NTAP","PSTG"],
+    "STX":   ["WDC","SNDK","MU","NTAP","PSTG"],
+    "SNDK":  ["WDC","STX","MU","NTAP","PSTG"],
+    "NTAP":  ["PSTG","WDC","STX","DELL","HPE"],
+    "PSTG":  ["NTAP","WDC","STX","DELL","HPE"],
+    # Software
+    "CRM":   ["NOW","MSFT","ORCL","WDAY","HUBS"],
+    "NOW":   ["CRM","MSFT","ORCL","WDAY","ADBE"],
+    "ADBE":  ["CRM","NOW","MSFT","FIGM","WDAY"],
+    "ORCL":  ["MSFT","CRM","SAP","IBM","WDAY"],
+    "WDAY":  ["CRM","NOW","ORCL","INTU","HUBS"],
+    "HUBS":  ["CRM","WDAY","NOW","ORCL","APPF"],
+    "INTU":  ["MSFT","ADBE","CRM","NOW","WDAY"],
+    # Cybersecurity
+    "CRWD":  ["PANW","ZS","FTNT","S","NET"],
+    "PANW":  ["CRWD","ZS","FTNT","S","NET"],
+    "ZS":    ["CRWD","PANW","FTNT","NET","S"],
+    "FTNT":  ["PANW","CRWD","ZS","CHKP","NET"],
+    "NET":   ["CRWD","ZS","PANW","FTNT","FSLY"],
+    # Cloud / infrastructure
+    "SNOW":  ["DBRX","PLTR","MDB","ESTC","DBX"],
+    "PLTR":  ["SNOW","AI","SMAR","DOMO","BB"],
+    "MDB":   ["SNOW","ESTC","DBRX","FSLY","CFLT"],
+    # Hardware / PC
+    "DELL":  ["HPQ","HPE","NTAP","PSTG","CSCO"],
+    "HPQ":   ["DELL","HPE","AAPL","LOGI","NTAP"],
+    "HPE":   ["DELL","HPQ","CSCO","NTAP","JNPR"],
+    # Networking
+    "CSCO":  ["ANET","JNPR","HPE","NOK","ERIC"],
+    "ANET":  ["CSCO","JNPR","HPE","EXTR","SMAR"],
+    # Consumer tech / streaming
+    "NFLX":  ["DIS","WBD","PARA","SPOT","AMZN"],
+    "SPOT":  ["NFLX","AAPL","AMZN","TIDAL","PNDRA"],
+    "DIS":   ["NFLX","WBD","PARA","CMCSA","LGF-A"],
+    # EV / Auto
+    "TSLA":  ["GM","F","RIVN","LCID","NIO"],
+    "RIVN":  ["TSLA","LCID","NIO","GM","F"],
+    "LCID":  ["RIVN","TSLA","NIO","GM","F"],
+    # Fintech
+    "V":     ["MA","PYPL","AXP","FIS","FI"],
+    "MA":    ["V","PYPL","AXP","FIS","FI"],
+    "PYPL":  ["V","MA","SQ","AFRM","SOFI"],
+    "SQ":    ["PYPL","V","MA","AFRM","SOFI"],
+    # E-commerce / retail
+    "SHOP":  ["AMZN","WIX","BIGC","MELI","ETSY"],
+    "MELI":  ["SHOP","AMZN","EBAY","ETSY","SE"],
+    # Healthcare tech
+    "VEEV":  ["HUBS","CRM","DOCS","OMCL","RCM"],
+    # Biotech / pharma
+    "LLY":   ["NVO","ABBV","MRK","PFE","REGN"],
+    "NVO":   ["LLY","ABBV","MRK","PFE","REGN"],
+}
+
 # ── Peer universe by yfinance industry name ────────────────────────────────────
 PEER_UNIVERSE: dict[str, list[str]] = {
+    # Technology
     "Semiconductors":                         ["NVDA","AMD","INTC","QCOM","AVGO","MRVL","MU","TXN","LRCX","AMAT"],
+    "Semiconductor Equipment & Materials":    ["AMAT","LRCX","KLAC","ASML","ONTO","ENTG","MKSI"],
     "Software—Application":                   ["MSFT","ORCL","ADBE","CRM","INTU","WDAY","NOW","HUBS"],
     "Software—Infrastructure":                ["MSFT","ORCL","IBM","PANW","CRWD","ZS","FTNT","NET"],
     "Internet Content & Information":         ["GOOGL","META","SNAP","PINS","IAC","RDDT"],
-    "Consumer Electronics":                   ["AAPL","MSFT","DELL","HPQ","SONY"],
-    "Electronic Gaming & Multimedia":         ["EA","TTWO","RBLX","NTDOY","SONY"],
+    "Consumer Electronics":                   ["AAPL","MSFT","GOOGL","AMZN","SONY"],
+    "Computer Hardware":                      ["DELL","HPQ","HPE","NTAP","PSTG","WDC","STX"],
+    "Data Storage":                           ["WDC","STX","SNDK","MU","NTAP","PSTG"],
+    "Electronic Components":                  ["TXN","ADI","ON","MCHP","NXPI","STM","AVT"],
+    "Communication Equipment":                ["CSCO","ANET","JNPR","HPE","NOK","ERIC"],
+    "Information Technology Services":        ["IBM","ACN","INFY","WIT","CTSH","EPAM"],
+    "Electronic Gaming & Multimedia":         ["EA","TTWO","RBLX","NTDOY","SONY","UBSFY"],
+    "Scientific & Technical Instruments":     ["TMO","DHR","WAT","A","FMC","IDXX"],
+    # Financials
     "Banks—Diversified":                      ["JPM","BAC","WFC","C","USB","PNC","TFC"],
     "Banks—Regional":                         ["USB","PNC","RF","CFG","KEY","FITB","HBAN"],
     "Insurance—Diversified":                  ["BRK-B","MET","PRU","AIG","ALL","TRV"],
     "Insurance—Life":                         ["MET","PRU","LNC","SFG","GL"],
-    "Drug Manufacturers—General":             ["JNJ","PFE","MRK","ABBV","LLY","BMY","AZN"],
-    "Drug Manufacturers—Specialty & Generic": ["AMGN","GILD","REGN","BIIB","VRTX","MRNA"],
-    "Biotechnology":                          ["AMGN","GILD","REGN","BIIB","VRTX","MRNA","SGEN"],
-    "Medical Devices":                        ["MDT","ABT","SYK","BSX","EW","ZBH","ISRG"],
-    "Oil & Gas Integrated":                   ["XOM","CVX","BP","SHEL","TTE","ENB"],
-    "Oil & Gas E&P":                          ["PXD","COP","DVN","EOG","OXY","FANG"],
-    "Specialty Retail":                       ["AMZN","WMT","TGT","COST","HD","LOW","BBY"],
-    "Discount Stores":                        ["WMT","COST","TGT","DG","DLTR"],
-    "Auto Manufacturers":                     ["TSLA","GM","F","STLA","TM","HMC"],
-    "Airlines":                               ["DAL","UAL","AAL","LUV","ALK"],
-    "Telecom Services":                       ["T","VZ","TMUS","CMCSA","CHTR"],
-    "Aerospace & Defense":                    ["LMT","RTX","NOC","GD","BA","LHX"],
-    "Healthcare Plans":                       ["UNH","CVS","HUM","CNC","MOH","ELV"],
-    "REIT—Diversified":                       ["AMT","PLD","CCI","EQIX","SPG","PSA","O"],
-    "Entertainment":                          ["DIS","NFLX","PARA","WBD","CMCSA"],
-    "Restaurants":                            ["MCD","SBUX","YUM","CMG","DPZ","QSR"],
+    "Insurance—Property & Casualty":          ["ALL","TRV","PGR","CB","HIG"],
     "Capital Markets":                        ["GS","MS","JPM","BAC","C","SCHW"],
     "Asset Management":                       ["BLK","BX","KKR","APO","ARES"],
-    "Utilities—Regulated Electric":           ["NEE","DUK","SO","AEP","EXC","D"],
+    "Credit Services":                        ["V","MA","PYPL","AXP","COF","DFS"],
+    "Financial Data & Stock Exchanges":       ["SPGI","MCO","ICE","MSCI","NDAQ"],
+    # Healthcare
+    "Drug Manufacturers—General":             ["JNJ","PFE","MRK","ABBV","LLY","BMY","AZN"],
+    "Drug Manufacturers—Specialty & Generic": ["AMGN","GILD","REGN","BIIB","VRTX","MRNA"],
+    "Biotechnology":                          ["AMGN","GILD","REGN","BIIB","VRTX","MRNA"],
+    "Medical Devices":                        ["MDT","ABT","SYK","BSX","EW","ZBH","ISRG"],
+    "Healthcare Plans":                       ["UNH","CVS","HUM","CNC","MOH","ELV"],
+    "Diagnostics & Research":                 ["TMO","DHR","ILMN","BIO","IDXX","QGEN"],
+    # Energy
+    "Oil & Gas Integrated":                   ["XOM","CVX","BP","SHEL","TTE","ENB"],
+    "Oil & Gas E&P":                          ["COP","DVN","EOG","OXY","PXD","FANG"],
+    "Oil & Gas Midstream":                    ["ENB","WMB","KMI","EPD","ET"],
+    "Oil & Gas Refining & Marketing":         ["PSX","MPC","VLO","PBF","DK"],
+    # Consumer
+    "Specialty Retail":                       ["AMZN","WMT","TGT","COST","HD","LOW","BBY"],
+    "Discount Stores":                        ["WMT","COST","TGT","DG","DLTR"],
+    "Internet Retail":                        ["AMZN","SHOP","EBAY","MELI","ETSY","W"],
+    "Apparel Retail":                         ["NKE","GAP","LULU","ROST","TJX","URBN"],
+    "Restaurants":                            ["MCD","SBUX","YUM","CMG","DPZ","QSR"],
+    "Packaged Foods":                         ["KHC","GIS","CPB","K","MDLZ","CAG"],
+    "Beverages—Non-Alcoholic":                ["KO","PEP","MNST","CELH","KDP"],
+    "Beverages—Alcoholic":                    ["STZ","BUD","SAM","MO","PM"],
+    "Household & Personal Products":          ["PG","CL","EL","KMB","CHD"],
+    # Industrial
+    "Aerospace & Defense":                    ["LMT","RTX","NOC","GD","BA","LHX"],
+    "Airlines":                               ["DAL","UAL","AAL","LUV","ALK"],
+    "Auto Manufacturers":                     ["TSLA","GM","F","STLA","TM","HMC"],
+    "Auto Parts":                             ["APTV","BWA","LEA","MGA","GT"],
     "Integrated Freight & Logistics":         ["UPS","FDX","XPO","GXO","CHRW"],
+    "Farm & Heavy Construction Machinery":    ["CAT","DE","PCAR","CMI","TEX"],
+    "Specialty Industrial Machinery":         ["HON","EMR","ITW","PH","ROK","AME"],
+    # Utilities / Telecom / REIT
+    "Telecom Services":                       ["T","VZ","TMUS","CMCSA","CHTR"],
+    "Utilities—Regulated Electric":           ["NEE","DUK","SO","AEP","EXC","D"],
+    "Utilities—Renewable":                    ["NEE","BEP","CWEN","AY","NOVA"],
+    "REIT—Diversified":                       ["AMT","PLD","CCI","EQIX","SPG","PSA","O"],
+    "REIT—Industrial":                        ["PLD","REXR","EGP","FR","STAG"],
+    "REIT—Retail":                            ["SPG","O","NNN","NTST","BRX"],
+    # Entertainment / Media
+    "Entertainment":                          ["DIS","NFLX","PARA","WBD","CMCSA"],
     "Travel Services":                        ["BKNG","EXPE","ABNB","TRIP","MMYT"],
 }
 
@@ -1360,7 +1486,28 @@ def get_comps_data(ticker: str):
         raise HTTPException(status_code=404, detail=f"Ticker '{ticker}' not found")
 
     industry = info.get("industry", "")
-    peers_raw = [p for p in PEER_UNIVERSE.get(industry, []) if p != ticker][:6]
+    sector   = info.get("sector", "")
+
+    # 1) ticker-specific override  2) industry lookup  3) sector-level fallback
+    if ticker in TICKER_PEERS:
+        peers_raw = [p for p in TICKER_PEERS[ticker] if p != ticker][:6]
+    elif industry in PEER_UNIVERSE:
+        peers_raw = [p for p in PEER_UNIVERSE[industry] if p != ticker][:6]
+    else:
+        SECTOR_FALLBACK: dict[str, list[str]] = {
+            "Technology":            ["AAPL","MSFT","GOOGL","NVDA","META","AMZN"],
+            "Healthcare":            ["JNJ","PFE","UNH","ABBV","LLY","MRK"],
+            "Financials":            ["JPM","BAC","WFC","GS","MS","BRK-B"],
+            "Consumer Cyclical":     ["AMZN","TSLA","HD","NKE","MCD","SBUX"],
+            "Consumer Defensive":    ["WMT","PG","KO","PEP","COST","CL"],
+            "Industrials":           ["HON","UPS","CAT","DE","BA","LMT"],
+            "Energy":                ["XOM","CVX","COP","SLB","EOG","OXY"],
+            "Communication Services":["GOOGL","META","DIS","NFLX","T","VZ"],
+            "Utilities":             ["NEE","DUK","SO","AEP","EXC","D"],
+            "Real Estate":           ["AMT","PLD","EQIX","CCI","SPG","PSA"],
+            "Basic Materials":       ["LIN","APD","ECL","SHW","NEM","FCX"],
+        }
+        peers_raw = [p for p in SECTOR_FALLBACK.get(sector, []) if p != ticker][:6]
 
     def _row(sym: str, pi: dict) -> dict:
         px  = float(pi.get("currentPrice") or pi.get("regularMarketPrice") or 0)
