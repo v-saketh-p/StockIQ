@@ -22,12 +22,17 @@ from indicators import (
 
 app = FastAPI()
 
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── In-memory TTL cache for stock context (60 s) ─────────────────────────────
+_ctx_cache: dict[str, tuple[float, dict]] = {}
+_CTX_TTL = 60
 
 
 def safe(val):
@@ -38,61 +43,45 @@ def safe(val):
     return val
 
 
-@app.get("/api/stock/{ticker}")
-def get_stock(ticker: str):
-    ticker = ticker.upper()
-    t = yf.Ticker(ticker)
-    info = t.info
+def _stock_context(ticker: str) -> dict:
+    """Fetch and compute all commonly-needed stock data, cached for 60 s per ticker."""
+    now = _time.monotonic()
+    cached = _ctx_cache.get(ticker)
+    if cached and now - cached[0] < _CTX_TTL:
+        return cached[1]
 
-    if not info or info.get("regularMarketPrice") is None and info.get("currentPrice") is None:
+    t    = yf.Ticker(ticker)
+    info = t.info
+    if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
         raise HTTPException(status_code=404, detail=f"Ticker '{ticker}' not found")
 
     hist = t.history(period="1y")
-    hist = hist[hist["Close"].notna()]
+    hist = hist[hist["Close"].notna()].copy()
     if hist.empty:
         raise HTTPException(status_code=404, detail="No price history available")
 
-    close = hist["Close"]
-
-    # Indicators
     hist.ta.rsi(length=14, append=True)
     hist.ta.macd(append=True)
     hist.ta.vwap(append=True)
 
-    rsi_val    = safe(hist["RSI_14"].iloc[-1])        if "RSI_14"      in hist.columns else None
-    macd_val   = safe(hist["MACD_12_26_9"].iloc[-1])  if "MACD_12_26_9"  in hist.columns else None
-    signal_val = safe(hist["MACDs_12_26_9"].iloc[-1]) if "MACDs_12_26_9" in hist.columns else None
+    close      = hist["Close"]
+    rsi_val    = safe(hist["RSI_14"].iloc[-1])        if "RSI_14"       in hist.columns else None
+    macd_val   = safe(hist["MACD_12_26_9"].iloc[-1])  if "MACD_12_26_9" in hist.columns else None
+    signal_val = safe(hist["MACDs_12_26_9"].iloc[-1]) if "MACDs_12_26_9"in hist.columns else None
     vwap_cols  = [c for c in hist.columns if c.startswith("VWAP")]
     vwap_val   = safe(hist[vwap_cols[0]].iloc[-1]) if vwap_cols else None
+    ma50       = float(close.rolling(50).mean().iloc[-1])
+    ma200      = float(close.rolling(200).mean().iloc[-1])
+    price_now  = float(info.get("currentPrice") or info.get("regularMarketPrice") or close.iloc[-1])
+    _prev      = info.get("previousClose") or info.get("regularMarketPreviousClose")
+    change_1d  = round((price_now / float(_prev) - 1) * 100, 2) if _prev else 0.0
+    vol_today  = int(hist["Volume"].iloc[-1])
+    vol_avg20  = float(hist["Volume"].rolling(20).mean().iloc[-1])
 
-    ma50  = float(close.rolling(50).mean().iloc[-1])
-    ma200 = float(close.rolling(200).mean().iloc[-1])
-
-    # Real-time price and 1D change from the info dict — hist["Close"] lags by one
-    # session during market hours because today's candle has no official close yet.
-    price_now = float(info.get("currentPrice") or info.get("regularMarketPrice") or close.iloc[-1])
-    _prev     = info.get("previousClose") or info.get("regularMarketPreviousClose")
-    change_1d = round((price_now / float(_prev) - 1) * 100, 2) if _prev else 0.0
-
-    vol_today = int(hist["Volume"].iloc[-1])
-    vol_avg20 = float(hist["Volume"].rolling(20).mean().iloc[-1])
-
-    # 1-year price chart data (weekly sampled for performance)
-    chart_data = []
-    hist_reset = hist.reset_index()
-    for _, row in hist_reset.iloc[::3].iterrows():
-        chart_data.append({
-            "date": row["Date"].strftime("%Y-%m-%d"),
-            "close": round(float(row["Close"]), 2),
-            "volume": int(row["Volume"]),
-        })
-
-    roe           = safe(info.get("returnOnEquity"))
-    # Gross margin is meaningless (returns 0.0) for banks/financials — treat as N/A
+    roe              = safe(info.get("returnOnEquity"))
     gross_margin_raw = safe(info.get("grossMargins"))
-    gross_margin  = gross_margin_raw if (gross_margin_raw and gross_margin_raw > 0.001) else None
+    gross_margin     = gross_margin_raw if (gross_margin_raw and gross_margin_raw > 0.001) else None
 
-    # Compute TTM operating margin from last 4 quarters (more accurate than info field which can be single-quarter)
     op_margin = None
     try:
         inc_q = t.quarterly_income_stmt
@@ -106,11 +95,10 @@ def get_stock(ticker: str):
     if op_margin is None:
         op_margin = safe(info.get("operatingMargins"))
 
-    net_margin    = safe(info.get("profitMargins"))
-    rev_growth    = safe(info.get("revenueGrowth"))
-    eps_growth    = safe(info.get("earningsGrowth"))
+    net_margin = safe(info.get("profitMargins"))
+    rev_growth = safe(info.get("revenueGrowth"))
+    eps_growth = safe(info.get("earningsGrowth"))
 
-    # Compute TTM FCF by summing last 4 quarters (annual cashflow misses the most recent quarter)
     free_cf = None
     try:
         cf_q = t.quarterly_cashflow
@@ -130,68 +118,110 @@ def get_stock(ticker: str):
         except Exception:
             free_cf = safe(info.get("freeCashflow"))
 
-    debt_eq       = safe(info.get("debtToEquity"))
-    total_cash    = safe(info.get("totalCash"))
-    total_debt    = safe(info.get("totalDebt"))
-    total_rev     = safe(info.get("totalRevenue"))
+    ctx = {
+        "t":           t,
+        "info":        info,
+        "hist":        hist,
+        "close":       close,
+        "price_now":   price_now,
+        "change_1d":   change_1d,
+        "ma50":        ma50,
+        "ma200":       ma200,
+        "rsi_val":     rsi_val,
+        "macd_val":    macd_val,
+        "signal_val":  signal_val,
+        "vwap_val":    vwap_val,
+        "vol_today":   vol_today,
+        "vol_avg20":   vol_avg20,
+        "roe":         roe,
+        "gross_margin":gross_margin,
+        "op_margin":   op_margin,
+        "net_margin":  net_margin,
+        "rev_growth":  rev_growth,
+        "eps_growth":  eps_growth,
+        "free_cf":     free_cf,
+        "debt_eq":     safe(info.get("debtToEquity")),
+        "pe_trailing": safe(info.get("trailingPE")),
+        "pe_forward":  safe(info.get("forwardPE")),
+        "ev_ebitda":   safe(info.get("enterpriseToEbitda")),
+        "market_cap":  safe(info.get("marketCap")),
+    }
+    _ctx_cache[ticker] = (_time.monotonic(), ctx)
+    return ctx
 
-    # Dividend yield: yfinance's dividendYield field is already in % form for some tickers
-    # and returns None for others even when dividends are paid (e.g. JNJ, JPM).
-    # Most reliable approach: calculate from annual dividend rate / price.
-    # Fall back to trailingAnnualDividendRate if forward dividendRate is missing.
-    div_rate = safe(info.get("dividendRate")) or safe(info.get("trailingAnnualDividendRate"))
-    div_yield = round((div_rate / price_now) * 100, 2) if (div_rate and div_rate > 0 and price_now) else None
 
+@app.get("/api/stock/{ticker}")
+def get_stock(ticker: str):
+    ticker = ticker.upper()
+    ctx  = _stock_context(ticker)
+    info = ctx["info"]
+    hist = ctx["hist"]
+
+    chart_data = []
+    hist_reset = hist.reset_index()
+    for _, row in hist_reset.iloc[::3].iterrows():
+        chart_data.append({
+            "date":   row["Date"].strftime("%Y-%m-%d"),
+            "close":  round(float(row["Close"]), 2),
+            "volume": int(row["Volume"]),
+        })
+
+    total_cash = safe(info.get("totalCash"))
+    total_debt = safe(info.get("totalDebt"))
+    total_rev  = safe(info.get("totalRevenue"))
+    # Dividend yield: calculate from annual rate / price; fall back to trailingAnnualDividendRate
+    div_rate  = safe(info.get("dividendRate")) or safe(info.get("trailingAnnualDividendRate"))
+    div_yield = round((div_rate / ctx["price_now"]) * 100, 2) if (div_rate and div_rate > 0) else None
     pre_price  = safe(info.get("preMarketPrice"))
     pre_pct    = safe(info.get("preMarketChangePercent"))
     post_price = safe(info.get("postMarketPrice"))
     post_pct   = safe(info.get("postMarketChangePercent"))
 
     return {
-        "ticker": ticker,
-        "name": info.get("longName", ticker),
-        "sector": info.get("sector", ""),
+        "ticker":   ticker,
+        "name":     info.get("longName", ticker),
+        "sector":   info.get("sector", ""),
         "industry": info.get("industry", ""),
-        "price": round(price_now, 2),
-        "change": change_1d,
-        "preMarket":  { "price": round(pre_price,  2) if pre_price  else None, "changePct": round(pre_pct,  3) if pre_pct  else None },
-        "postMarket": { "price": round(post_price, 2) if post_price else None, "changePct": round(post_pct, 3) if post_pct else None },
-        "marketCap": safe(info.get("marketCap")),
+        "price":    round(ctx["price_now"], 2),
+        "change":   ctx["change_1d"],
+        "preMarket":  {"price": round(pre_price,  2) if pre_price  else None, "changePct": round(pre_pct,  3) if pre_pct  else None},
+        "postMarket": {"price": round(post_price, 2) if post_price else None, "changePct": round(post_pct, 3) if post_pct else None},
+        "marketCap":        ctx["market_cap"],
         "fiftyTwoWeekHigh": safe(info.get("fiftyTwoWeekHigh")),
         "fiftyTwoWeekLow":  safe(info.get("fiftyTwoWeekLow")),
-        "beta": round(safe(info.get("beta")) or 0, 2) or None,
-        "eps":  safe(info.get("trailingEps")),
+        "beta":     round(safe(info.get("beta")) or 0, 2) or None,
+        "eps":      safe(info.get("trailingEps")),
         "revenueB": round(total_rev / 1e9, 2) if total_rev else None,
         "valuation": {
-            "peTrailing":  round(safe(info.get("trailingPE")) or 0, 2) or None,
-            "evEbitda":    round(safe(info.get("enterpriseToEbitda")) or 0, 2) or None,
+            "peTrailing":  round(ctx["pe_trailing"] or 0, 2) or None,
+            "evEbitda":    round(ctx["ev_ebitda"]   or 0, 2) or None,
             "evRevenue":   round(safe(info.get("enterpriseToRevenue")) or 0, 2) or None,
-            "priceToBook": round(safe(info.get("priceToBook")) or 0, 2) or None,
+            "priceToBook": round(safe(info.get("priceToBook"))         or 0, 2) or None,
         },
         "profitability": {
-            "roe":              round(roe * 100, 2)          if roe          else None,
-            "grossMargin":      round(gross_margin * 100, 2) if gross_margin else None,
-            "operatingMargin":  round(op_margin * 100, 2)    if op_margin    else None,
-            "netMargin":        round(net_margin * 100, 2)   if net_margin   else None,
-            "revenueGrowth":    round(rev_growth * 100, 2)   if rev_growth   else None,
-            "epsGrowth":        round(eps_growth * 100, 2)   if eps_growth   else None,
+            "roe":             round(ctx["roe"]          * 100, 2) if ctx["roe"]          else None,
+            "grossMargin":     round(ctx["gross_margin"] * 100, 2) if ctx["gross_margin"] else None,
+            "operatingMargin": round(ctx["op_margin"]    * 100, 2) if ctx["op_margin"]    else None,
+            "netMargin":       round(ctx["net_margin"]   * 100, 2) if ctx["net_margin"]   else None,
+            "revenueGrowth":   round(ctx["rev_growth"]   * 100, 2) if ctx["rev_growth"]   else None,
+            "epsGrowth":       round(ctx["eps_growth"]   * 100, 2) if ctx["eps_growth"]   else None,
         },
         "balanceSheet": {
-            "debtEquity":    round(debt_eq, 2) if debt_eq else None,
-            "freeCashFlow":  round(free_cf / 1e9, 2) if free_cf else None,
-            "totalCash":     round(total_cash / 1e9, 2) if total_cash else None,
-            "totalDebt":     round(total_debt / 1e9, 2) if total_debt else None,
+            "debtEquity":    round(ctx["debt_eq"], 2)          if ctx["debt_eq"]  else None,
+            "freeCashFlow":  round(ctx["free_cf"] / 1e9, 2)    if ctx["free_cf"]  else None,
+            "totalCash":     round(total_cash / 1e9, 2)        if total_cash      else None,
+            "totalDebt":     round(total_debt / 1e9, 2)        if total_debt      else None,
             "dividendYield": div_yield,
         },
         "technicals": {
-            "rsi":         round(rsi_val, 2)    if rsi_val    else None,
-            "macd":        round(macd_val, 2)   if macd_val   else None,
-            "macdSignal":  round(signal_val, 2) if signal_val else None,
-            "vwap":        round(vwap_val, 2)   if vwap_val   else None,
-            "ma50":        round(ma50, 2),
-            "ma200":       round(ma200, 2),
-            "volume":      vol_today,
-            "volumeAvg20": round(vol_avg20),
+            "rsi":         round(ctx["rsi_val"],    2) if ctx["rsi_val"]    else None,
+            "macd":        round(ctx["macd_val"],   2) if ctx["macd_val"]   else None,
+            "macdSignal":  round(ctx["signal_val"], 2) if ctx["signal_val"] else None,
+            "vwap":        round(ctx["vwap_val"],   2) if ctx["vwap_val"]   else None,
+            "ma50":        round(ctx["ma50"],  2),
+            "ma200":       round(ctx["ma200"], 2),
+            "volume":      ctx["vol_today"],
+            "volumeAvg20": round(ctx["vol_avg20"]),
         },
         "chart": chart_data,
     }
@@ -334,109 +364,48 @@ def get_chart(ticker: str, period: str = "1y", interval: str = "1d"):
 @app.get("/api/stock/{ticker}/report")
 def get_stock_report(ticker: str):
     ticker = ticker.upper()
-    t = yf.Ticker(ticker)
-    info = t.info
-
-    if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
-        raise HTTPException(status_code=404, detail=f"Ticker '{ticker}' not found")
-
-    hist = t.history(period="1y")
-    hist = hist[hist["Close"].notna()]
-    if hist.empty:
-        raise HTTPException(status_code=404, detail="No price history available")
-
-    close = hist["Close"]
-    hist.ta.rsi(length=14, append=True)
-    hist.ta.macd(append=True)
-    hist.ta.vwap(append=True)
-
-    rsi_val    = safe(hist["RSI_14"].iloc[-1])        if "RSI_14"       in hist.columns else None
-    macd_val   = safe(hist["MACD_12_26_9"].iloc[-1])  if "MACD_12_26_9"  in hist.columns else None
-    signal_val = safe(hist["MACDs_12_26_9"].iloc[-1]) if "MACDs_12_26_9" in hist.columns else None
-    vwap_cols  = [c for c in hist.columns if c.startswith("VWAP")]
-    vwap_val   = safe(hist[vwap_cols[0]].iloc[-1]) if vwap_cols else None
-
-    ma50  = float(close.rolling(50).mean().iloc[-1])
-    ma200 = float(close.rolling(200).mean().iloc[-1])
-    price_now = float(info.get("currentPrice") or info.get("regularMarketPrice") or close.iloc[-1])
-    _prev     = info.get("previousClose") or info.get("regularMarketPreviousClose")
-    change    = round((price_now / float(_prev) - 1) * 100, 2) if _prev else 0.0
-
-    vol_today = int(hist["Volume"].iloc[-1])
-    vol_avg20 = float(hist["Volume"].rolling(20).mean().iloc[-1])
-    vol_ratio = round(vol_today / vol_avg20, 2) if vol_avg20 else None
-
-    roe          = safe(info.get("returnOnEquity"))
-    gross_margin = safe(info.get("grossMargins"))
-    op_margin = None
-    try:
-        inc_q = t.quarterly_income_stmt
-        if "Total Revenue" in inc_q.index and "Operating Income" in inc_q.index:
-            rev_ttm = float(inc_q.loc["Total Revenue"].iloc[:4].dropna().sum())
-            op_ttm  = float(inc_q.loc["Operating Income"].iloc[:4].dropna().sum())
-            if rev_ttm > 0:
-                op_margin = op_ttm / rev_ttm
-    except Exception:
-        pass
-    if op_margin is None:
-        op_margin = safe(info.get("operatingMargins"))
-    net_margin   = safe(info.get("profitMargins"))
-    rev_growth   = safe(info.get("revenueGrowth"))
-    eps_growth   = safe(info.get("earningsGrowth"))
-    free_cf = None
-    try:
-        cf_q = t.quarterly_cashflow
-        if "Free Cash Flow" in cf_q.index:
-            last4 = cf_q.loc["Free Cash Flow"].iloc[:4].dropna()
-            if len(last4) >= 3:
-                free_cf = float(last4.sum())
-    except Exception:
-        pass
-    if free_cf is None:
-        free_cf = safe(info.get("freeCashflow"))
-    debt_eq      = safe(info.get("debtToEquity"))
-    pe_trailing  = safe(info.get("trailingPE"))
-    pe_forward   = safe(info.get("forwardPE"))
-    ev_ebitda    = safe(info.get("enterpriseToEbitda"))
-    market_cap   = safe(info.get("marketCap"))
+    ctx  = _stock_context(ticker)
+    info = ctx["info"]
 
     def pct(v): return f"{round(v * 100, 2)}%" if v is not None else "N/A"
     def num(v, d=2): return f"{round(v, d)}" if v is not None else "N/A"
+
+    vol_ratio = round(ctx["vol_today"] / ctx["vol_avg20"], 2) if ctx["vol_avg20"] else None
 
     prompt = f"""You are a professional equity research analyst. Analyze the following data for {ticker} ({info.get('longName', ticker)}) and write a concise but thorough investment research report.
 
 **Company:** {info.get('longName', ticker)}
 **Sector:** {info.get('sector', 'N/A')} | **Industry:** {info.get('industry', 'N/A')}
-**Market Cap:** {'${:,.0f}B'.format(market_cap / 1e9) if market_cap else 'N/A'}
+**Market Cap:** {'${:,.0f}B'.format(ctx['market_cap'] / 1e9) if ctx['market_cap'] else 'N/A'}
 
 **Price & Performance**
-- Current Price: ${round(price_now, 2)}
-- Daily Change: {change}%
-- vs 50-Day MA: {'above' if price_now > ma50 else 'below'} (MA50: ${round(ma50, 2)})
-- vs 200-Day MA: {'above' if price_now > ma200 else 'below'} (MA200: ${round(ma200, 2)})
+- Current Price: ${round(ctx['price_now'], 2)}
+- Daily Change: {ctx['change_1d']}%
+- vs 50-Day MA: {'above' if ctx['price_now'] > ctx['ma50'] else 'below'} (MA50: ${round(ctx['ma50'], 2)})
+- vs 200-Day MA: {'above' if ctx['price_now'] > ctx['ma200'] else 'below'} (MA200: ${round(ctx['ma200'], 2)})
 
 **Valuation**
-- P/E (Trailing): {num(pe_trailing)}
-- P/E (Forward): {num(pe_forward)}
-- EV/EBITDA: {num(ev_ebitda)}
+- P/E (Trailing): {num(ctx['pe_trailing'])}
+- P/E (Forward): {num(ctx['pe_forward'])}
+- EV/EBITDA: {num(ctx['ev_ebitda'])}
 
 **Profitability**
-- Gross Margin: {pct(gross_margin)}
-- Operating Margin: {pct(op_margin)}
-- Net Margin: {pct(net_margin)}
-- ROE: {pct(roe)}
-- Revenue Growth (YoY): {pct(rev_growth)}
-- EPS Growth (YoY): {pct(eps_growth)}
+- Gross Margin: {pct(ctx['gross_margin'])}
+- Operating Margin: {pct(ctx['op_margin'])}
+- Net Margin: {pct(ctx['net_margin'])}
+- ROE: {pct(ctx['roe'])}
+- Revenue Growth (YoY): {pct(ctx['rev_growth'])}
+- EPS Growth (YoY): {pct(ctx['eps_growth'])}
 
 **Balance Sheet**
-- Debt/Equity: {num(debt_eq)}
-- Free Cash Flow: {'${:.2f}B'.format(free_cf / 1e9) if free_cf else 'N/A'}
+- Debt/Equity: {num(ctx['debt_eq'])}
+- Free Cash Flow: {'${:.2f}B'.format(ctx['free_cf'] / 1e9) if ctx['free_cf'] else 'N/A'}
 
 **Technical Indicators**
-- RSI (14): {num(rsi_val)} ({'Overbought' if rsi_val and rsi_val > 70 else 'Oversold' if rsi_val and rsi_val < 30 else 'Neutral'})
-- MACD: {num(macd_val)} | Signal: {num(signal_val)} ({'Bullish crossover' if macd_val and signal_val and macd_val > signal_val else 'Bearish crossover'})
-- VWAP: {'${:.2f} (price is {} VWAP)'.format(vwap_val, 'above' if price_now > vwap_val else 'below') if vwap_val else 'N/A'}
-- Volume: {'{:.1f}M'.format(vol_today / 1e6)} ({f'{vol_ratio}x avg' if vol_ratio else 'N/A'})
+- RSI (14): {num(ctx['rsi_val'])} ({'Overbought' if ctx['rsi_val'] and ctx['rsi_val'] > 70 else 'Oversold' if ctx['rsi_val'] and ctx['rsi_val'] < 30 else 'Neutral'})
+- MACD: {num(ctx['macd_val'])} | Signal: {num(ctx['signal_val'])} ({'Bullish crossover' if ctx['macd_val'] and ctx['signal_val'] and ctx['macd_val'] > ctx['signal_val'] else 'Bearish crossover'})
+- VWAP: {'${:.2f} (price is {} VWAP)'.format(ctx['vwap_val'], 'above' if ctx['price_now'] > ctx['vwap_val'] else 'below') if ctx['vwap_val'] else 'N/A'}
+- Volume: {'{:.1f}M'.format(ctx['vol_today'] / 1e6)} ({f'{vol_ratio}x avg' if vol_ratio else 'N/A'})
 
 Write a structured report with these sections:
 1. **Executive Summary** (2-3 sentences with overall take)
@@ -518,45 +487,22 @@ def get_news(ticker: str):
 @app.get("/api/stock/{ticker}/bull-bear")
 def get_bull_bear(ticker: str):
     ticker = ticker.upper()
-    t = yf.Ticker(ticker)
-    info = t.info
-
-    if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
-        raise HTTPException(status_code=404, detail=f"Ticker '{ticker}' not found")
-
-    hist      = t.history(period="1y")
-    hist      = hist[hist["Close"].notna()]
-    close     = hist["Close"]
-    ma50      = float(close.rolling(50).mean().iloc[-1])
-    ma200     = float(close.rolling(200).mean().iloc[-1])
-    price_now = float(info.get("currentPrice") or info.get("regularMarketPrice") or close.iloc[-1])
+    ctx  = _stock_context(ticker)
+    info = ctx["info"]
 
     def pct(v): return f"{round(v * 100, 2)}%" if v is not None else "N/A"
     def num(v, d=2): return f"{round(v, d)}" if v is not None else "N/A"
-
-    pe_trailing  = safe(info.get("trailingPE"))
-    pe_forward   = safe(info.get("forwardPE"))
-    ev_ebitda    = safe(info.get("enterpriseToEbitda"))
-    roe          = safe(info.get("returnOnEquity"))
-    gross_margin = safe(info.get("grossMargins"))
-    op_margin    = safe(info.get("operatingMargins"))
-    net_margin   = safe(info.get("profitMargins"))
-    rev_growth   = safe(info.get("revenueGrowth"))
-    eps_growth   = safe(info.get("earningsGrowth"))
-    free_cf      = safe(info.get("freeCashflow"))
-    debt_eq      = safe(info.get("debtToEquity"))
-    market_cap   = safe(info.get("marketCap"))
 
     prompt = f"""You are a Wall Street research analyst. Based on the data below for {ticker} ({info.get('longName', ticker)}), write a structured bull vs bear analysis.
 
 {ticker} — {info.get('longName', ticker)}
 Sector: {info.get('sector', 'N/A')} | Industry: {info.get('industry', 'N/A')}
-Market Cap: {'${:,.0f}B'.format(market_cap / 1e9) if market_cap else 'N/A'}
-Price: ${round(price_now, 2)} | P/E: {num(pe_trailing)} | Fwd P/E: {num(pe_forward)} | EV/EBITDA: {num(ev_ebitda)}
-Margins: Gross {pct(gross_margin)}, Operating {pct(op_margin)}, Net {pct(net_margin)}
-Growth: Revenue {pct(rev_growth)}, EPS {pct(eps_growth)} | ROE: {pct(roe)}
-Balance Sheet: D/E {num(debt_eq)}, FCF {'${:.2f}B'.format(free_cf/1e9) if free_cf else 'N/A'}
-Trend: {'above' if price_now > ma50 else 'below'} 50-DMA, {'above' if price_now > ma200 else 'below'} 200-DMA
+Market Cap: {'${:,.0f}B'.format(ctx['market_cap'] / 1e9) if ctx['market_cap'] else 'N/A'}
+Price: ${round(ctx['price_now'], 2)} | P/E: {num(ctx['pe_trailing'])} | Fwd P/E: {num(ctx['pe_forward'])} | EV/EBITDA: {num(ctx['ev_ebitda'])}
+Margins: Gross {pct(ctx['gross_margin'])}, Operating {pct(ctx['op_margin'])}, Net {pct(ctx['net_margin'])}
+Growth: Revenue {pct(ctx['rev_growth'])}, EPS {pct(ctx['eps_growth'])} | ROE: {pct(ctx['roe'])}
+Balance Sheet: D/E {num(ctx['debt_eq'])}, FCF {'${:.2f}B'.format(ctx['free_cf']/1e9) if ctx['free_cf'] else 'N/A'}
+Trend: {'above' if ctx['price_now'] > ctx['ma50'] else 'below'} 50-DMA, {'above' if ctx['price_now'] > ctx['ma200'] else 'below'} 200-DMA
 
 Format your response EXACTLY as shown — use these exact headers, no intro or outro:
 
@@ -604,51 +550,22 @@ class ChatRequest(BaseModel):
 @app.post("/api/stock/{ticker}/chat")
 def chat_stock(ticker: str, body: ChatRequest):
     ticker = ticker.upper()
-    t = yf.Ticker(ticker)
-    info = t.info
-
-    if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
-        raise HTTPException(status_code=404, detail=f"Ticker '{ticker}' not found")
-
-    hist = t.history(period="1y")
-    hist = hist[hist["Close"].notna()]
-    close = hist["Close"]
-    hist.ta.rsi(length=14, append=True)
-    hist.ta.macd(append=True)
-
-    rsi_val    = safe(hist["RSI_14"].iloc[-1])        if "RSI_14"       in hist.columns else None
-    macd_val   = safe(hist["MACD_12_26_9"].iloc[-1])  if "MACD_12_26_9"  in hist.columns else None
-    signal_val = safe(hist["MACDs_12_26_9"].iloc[-1]) if "MACDs_12_26_9" in hist.columns else None
-    ma50       = float(close.rolling(50).mean().iloc[-1])
-    ma200      = float(close.rolling(200).mean().iloc[-1])
-    price_now  = float(info.get("currentPrice") or info.get("regularMarketPrice") or close.iloc[-1])
+    ctx  = _stock_context(ticker)
+    info = ctx["info"]
 
     def pct(v): return f"{round(v * 100, 2)}%" if v is not None else "N/A"
     def num(v, d=2): return f"{round(v, d)}" if v is not None else "N/A"
 
-    roe          = safe(info.get("returnOnEquity"))
-    gross_margin = safe(info.get("grossMargins"))
-    op_margin    = safe(info.get("operatingMargins"))
-    net_margin   = safe(info.get("profitMargins"))
-    rev_growth   = safe(info.get("revenueGrowth"))
-    eps_growth   = safe(info.get("earningsGrowth"))
-    free_cf      = safe(info.get("freeCashflow"))
-    debt_eq      = safe(info.get("debtToEquity"))
-    pe_trailing  = safe(info.get("trailingPE"))
-    pe_forward   = safe(info.get("forwardPE"))
-    ev_ebitda    = safe(info.get("enterpriseToEbitda"))
-    market_cap   = safe(info.get("marketCap"))
-
     system_prompt = f"""You are a friendly stock research assistant helping everyday investors understand {ticker} ({info.get('longName', ticker)}).
 
 LIVE DATA for {ticker}:
-Price: ${round(price_now, 2)} | Market Cap: {'${:,.0f}B'.format(market_cap / 1e9) if market_cap else 'N/A'} | Sector: {info.get('sector', 'N/A')}
-vs 50-DMA: {'above' if price_now > ma50 else 'below'} (${round(ma50,2)}) | vs 200-DMA: {'above' if price_now > ma200 else 'below'} (${round(ma200,2)})
-P/E: {num(pe_trailing)} trailing / {num(pe_forward)} forward | EV/EBITDA: {num(ev_ebitda)}
-Margins: Gross {pct(gross_margin)} | Op {pct(op_margin)} | Net {pct(net_margin)} | ROE {pct(roe)}
-Growth: Revenue {pct(rev_growth)} YoY | EPS {pct(eps_growth)} YoY
-Balance sheet: D/E {num(debt_eq)} | FCF {'${:.2f}B'.format(free_cf/1e9) if free_cf else 'N/A'}
-Technicals: RSI {num(rsi_val)} ({'overbought' if rsi_val and rsi_val>70 else 'oversold' if rsi_val and rsi_val<30 else 'neutral'}) | MACD {'bullish' if macd_val and signal_val and macd_val>signal_val else 'bearish'}
+Price: ${round(ctx['price_now'], 2)} | Market Cap: {'${:,.0f}B'.format(ctx['market_cap'] / 1e9) if ctx['market_cap'] else 'N/A'} | Sector: {info.get('sector', 'N/A')}
+vs 50-DMA: {'above' if ctx['price_now'] > ctx['ma50'] else 'below'} (${round(ctx['ma50'],2)}) | vs 200-DMA: {'above' if ctx['price_now'] > ctx['ma200'] else 'below'} (${round(ctx['ma200'],2)})
+P/E: {num(ctx['pe_trailing'])} trailing / {num(ctx['pe_forward'])} forward | EV/EBITDA: {num(ctx['ev_ebitda'])}
+Margins: Gross {pct(ctx['gross_margin'])} | Op {pct(ctx['op_margin'])} | Net {pct(ctx['net_margin'])} | ROE {pct(ctx['roe'])}
+Growth: Revenue {pct(ctx['rev_growth'])} YoY | EPS {pct(ctx['eps_growth'])} YoY
+Balance sheet: D/E {num(ctx['debt_eq'])} | FCF {'${:.2f}B'.format(ctx['free_cf']/1e9) if ctx['free_cf'] else 'N/A'}
+Technicals: RSI {num(ctx['rsi_val'])} ({'overbought' if ctx['rsi_val'] and ctx['rsi_val']>70 else 'oversold' if ctx['rsi_val'] and ctx['rsi_val']<30 else 'neutral'}) | MACD {'bullish' if ctx['macd_val'] and ctx['signal_val'] and ctx['macd_val']>ctx['signal_val'] else 'bearish'}
 
 RESPONSE RULES — follow these strictly:
 1. Keep answers SHORT: 3-5 bullet points max, or 2-3 short sentences. No essays.
@@ -1050,25 +967,9 @@ Be opinionated, specific, and timely. Use markdown throughout. ~600 words."""
 async def get_plugin_report(ticker: str):
     def _build():
         t_upper = ticker.upper()
-        t = yf.Ticker(t_upper)
-        info = t.info
-        if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
-            raise HTTPException(status_code=404, detail=f"Ticker '{t_upper}' not found")
-
-        hist      = t.history(period="1y")
-        hist      = hist[hist["Close"].notna()]
-        close     = hist["Close"]
-        hist.ta.rsi(length=14, append=True)
-        hist.ta.macd(append=True)
-
-        price_now  = float(info.get("currentPrice") or info.get("regularMarketPrice") or close.iloc[-1])
-        rsi_val    = safe(hist["RSI_14"].iloc[-1])        if "RSI_14"       in hist.columns else None
-        macd_val   = safe(hist["MACD_12_26_9"].iloc[-1])  if "MACD_12_26_9"  in hist.columns else None
-        signal_val = safe(hist["MACDs_12_26_9"].iloc[-1]) if "MACDs_12_26_9" in hist.columns else None
-        ma50       = float(close.rolling(50).mean().iloc[-1])
-        ma200      = float(close.rolling(200).mean().iloc[-1])
-        vol_today  = int(hist["Volume"].iloc[-1])
-        vol_avg20  = float(hist["Volume"].rolling(20).mean().iloc[-1])
+        ctx  = _stock_context(t_upper)
+        info = ctx["info"]
+        t    = ctx["t"]
 
         shares_out    = safe(info.get("sharesOutstanding"))
         target_mean   = safe(info.get("targetMeanPrice"))
@@ -1088,27 +989,27 @@ async def get_plugin_report(ticker: str):
         def pct(v): return f"{round(v * 100, 2)}%" if v is not None else "N/A"
         def num(v, d=2): return f"{round(v, d)}" if v is not None else "N/A"
         def bn(v): return f"${v / 1e9:.2f}B" if v is not None else "N/A"
-        upside   = f"{round((target_mean / price_now - 1) * 100, 1)}%" if target_mean else "N/A"
-        macd_dir = "Bullish" if macd_val and signal_val and macd_val > signal_val else "Bearish"
+        upside   = f"{round((target_mean / ctx['price_now'] - 1) * 100, 1)}%" if target_mean else "N/A"
+        macd_dir = "Bullish" if ctx["macd_val"] and ctx["signal_val"] and ctx["macd_val"] > ctx["signal_val"] else "Bearish"
 
         return f"""You are a senior Wall Street equity research analyst writing a full initiation-of-coverage report for {t_upper} ({info.get('longName', t_upper)}). Apply all four financial research frameworks: equity-research (initiating coverage, thesis, earnings analysis), financial-analysis (DCF valuation, comparable companies), earnings-reviewer (earnings quality and estimates), and market-researcher (sector context and competitive positioning).
 
 ═══ COMPANY DATA ═══
 Company: {info.get('longName', t_upper)}
 Sector: {info.get('sector', 'N/A')} | Industry: {info.get('industry', 'N/A')}
-Current Price: ${round(price_now, 2)} | Market Cap: {bn(safe(info.get('marketCap')))}
+Current Price: ${round(ctx['price_now'], 2)} | Market Cap: {bn(ctx['market_cap'])}
 
 ═══ VALUATION (financial-analysis: dcf-model + comps-analysis) ═══
-P/E Trailing: {num(safe(info.get('trailingPE')))} | P/E Forward: {num(safe(info.get('forwardPE')))}
-EV/EBITDA: {num(safe(info.get('enterpriseToEbitda')))} | EV/Revenue: {num(safe(info.get('enterpriseToRevenue')))}
-Revenue (TTM): {bn(safe(info.get('totalRevenue')))} | FCF (TTM): {bn(safe(info.get('freeCashflow')))} | EBITDA: {bn(safe(info.get('ebitda')))}
+P/E Trailing: {num(ctx['pe_trailing'])} | P/E Forward: {num(ctx['pe_forward'])}
+EV/EBITDA: {num(ctx['ev_ebitda'])} | EV/Revenue: {num(safe(info.get('enterpriseToRevenue')))}
+Revenue (TTM): {bn(safe(info.get('totalRevenue')))} | FCF (TTM): {bn(ctx['free_cf'])} | EBITDA: {bn(safe(info.get('ebitda')))}
 Debt: {bn(safe(info.get('totalDebt')))} | Cash: {bn(safe(info.get('totalCash')))} | Beta: {num(safe(info.get('beta')))}
 Shares Out: {f"{shares_out/1e9:.2f}B" if shares_out else "N/A"}
 
 ═══ PROFITABILITY (financial-analysis: 3-statement-model) ═══
-Gross Margin: {pct(safe(info.get('grossMargins')))} | Op Margin: {pct(safe(info.get('operatingMargins')))} | Net Margin: {pct(safe(info.get('profitMargins')))}
-Revenue Growth (YoY): {pct(safe(info.get('revenueGrowth')))} | EPS Growth (YoY): {pct(safe(info.get('earningsGrowth')))}
-ROE: {pct(safe(info.get('returnOnEquity')))} | Debt/Equity: {num(safe(info.get('debtToEquity')))}
+Gross Margin: {pct(ctx['gross_margin'])} | Op Margin: {pct(ctx['op_margin'])} | Net Margin: {pct(ctx['net_margin'])}
+Revenue Growth (YoY): {pct(ctx['rev_growth'])} | EPS Growth (YoY): {pct(ctx['eps_growth'])}
+ROE: {pct(ctx['roe'])} | Debt/Equity: {num(ctx['debt_eq'])}
 
 ═══ EARNINGS & ESTIMATES (equity-research: earnings-preview + earnings-reviewer) ═══
 EPS Forward: {num(safe(info.get('epsForward')))} | Analyst Count: {analyst_count or 'N/A'}
@@ -1117,11 +1018,11 @@ Upside to Mean Target: {upside}
 Analyst Recommendations: {analyst_recs_str}
 
 ═══ TECHNICALS (equity-research: catalyst-calendar + thesis-tracker) ═══
-RSI (14): {num(rsi_val)} ({'Overbought' if rsi_val and rsi_val > 70 else 'Oversold' if rsi_val and rsi_val < 30 else 'Neutral'})
-MACD: {num(macd_val)} | Signal: {num(signal_val)} → {macd_dir}
-vs 50-Day MA: {'above' if price_now > ma50 else 'below'} (${round(ma50, 2)})
-vs 200-Day MA: {'above' if price_now > ma200 else 'below'} (${round(ma200, 2)})
-Volume: {vol_today/1e6:.1f}M ({round(vol_today/vol_avg20,2)}x 20-day avg)
+RSI (14): {num(ctx['rsi_val'])} ({'Overbought' if ctx['rsi_val'] and ctx['rsi_val'] > 70 else 'Oversold' if ctx['rsi_val'] and ctx['rsi_val'] < 30 else 'Neutral'})
+MACD: {num(ctx['macd_val'])} | Signal: {num(ctx['signal_val'])} → {macd_dir}
+vs 50-Day MA: {'above' if ctx['price_now'] > ctx['ma50'] else 'below'} (${round(ctx['ma50'], 2)})
+vs 200-Day MA: {'above' if ctx['price_now'] > ctx['ma200'] else 'below'} (${round(ctx['ma200'], 2)})
+Volume: {ctx['vol_today']/1e6:.1f}M ({round(ctx['vol_today']/ctx['vol_avg20'],2)}x 20-day avg)
 
 Write a full investment research initiation report with these exact sections:
 
@@ -1324,6 +1225,24 @@ def _dcf_iv(fcf_ttm: float, growth: float, wacc: float, term_g: float,
     return (pv_sum + pv_tv - net_debt) / shares
 
 
+_rf_cache: dict = {"rate": None, "ts": 0.0}
+
+def _fetch_rf() -> float:
+    """Live 10Y US Treasury yield from ^TNX, cached for 1 hour. Falls back to 4.3%."""
+    now = _time.time()
+    if _rf_cache["rate"] is not None and now - _rf_cache["ts"] < 3600:
+        return _rf_cache["rate"]
+    try:
+        rate = float(yf.Ticker("^TNX").fast_info.last_price) / 100
+        if 0.01 < rate < 0.15:
+            _rf_cache["rate"] = rate
+            _rf_cache["ts"]   = now
+            return rate
+    except Exception:
+        pass
+    return _rf_cache["rate"] or 0.043
+
+
 @app.get("/api/stock/{ticker}/dcf-data")
 def get_dcf_data(ticker: str):
     ticker = ticker.upper()
@@ -1377,8 +1296,8 @@ def get_dcf_data(ticker: str):
         if span > 0:
             hist_cagr = (valid[-1]["fcf"] / valid[0]["fcf"]) ** (1 / span) - 1
 
-    # WACC via CAPM
-    rf, erp = 0.043, 0.055
+    # WACC via CAPM — risk-free rate fetched live from ^TNX (1-hour cache)
+    rf, erp = _fetch_rf(), 0.055
     ke = rf + beta * erp
     kd = 0.045
     try:
@@ -1401,16 +1320,17 @@ def get_dcf_data(ticker: str):
         wacc, we, wd = ke, 1.0, 0.0
     wacc = max(0.06, min(wacc, 0.22))
 
-    # Growth scenarios — capped at realistic ceilings
+    # Growth scenarios — capped at realistic ceilings.
+    # Bear case allows negative growth (FCF contraction) for shrinking/cyclical companies.
     if hist_cagr and hist_cagr > 0:
-        bear_g = min(hist_cagr * 0.25, 0.15)
+        bear_g = max(-0.05, min(hist_cagr * 0.25, 0.15))
         base_g = min(hist_cagr * 0.50, 0.30)
         bull_g = min(hist_cagr * 0.80, 0.50)
     else:
         rev_g  = float(safe(info.get("revenueGrowth")) or 0.05)
-        bear_g = max(0.0,  min(rev_g * 0.3, 0.10))
-        base_g = max(0.03, min(rev_g * 0.6, 0.20))
-        bull_g = max(0.07, min(rev_g * 0.9, 0.35))
+        bear_g = max(-0.05, min(rev_g * 0.3, 0.10))
+        base_g = max(0.03,  min(rev_g * 0.6, 0.20))
+        bull_g = max(0.07,  min(rev_g * 0.9, 0.35))
 
     net_debt = total_debt - total_cash
     shares   = float(shares_out) if shares_out else (equity_val / price if equity_val and price else None)
@@ -1443,8 +1363,7 @@ def get_dcf_data(ticker: str):
     wacc_vals = [round(wacc + d, 4) for d in (-0.02, -0.01, 0.0, 0.01, 0.02)]
     term_vals = [0.015, 0.020, 0.025, 0.030, 0.035]
     grid = [
-        [round(_dcf_iv(fcf_ttm, base_g, w, tg, net_debt, shares), 2)
-         if _dcf_iv(fcf_ttm, base_g, w, tg, net_debt, shares) else None
+        [round(iv, 2) if (iv := _dcf_iv(fcf_ttm, base_g, w, tg, net_debt, shares)) is not None else None
          for tg in term_vals]
         for w in wacc_vals
     ]
