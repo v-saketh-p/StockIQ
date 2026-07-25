@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { API_BASE } from "@/lib/api";
 
 interface IndexItem {
   symbol: string;
@@ -111,7 +112,7 @@ export default function MarketTicker() {
   // ── Fetch ──────────────────────────────────────────────────────────────────
   const fetchIndices = useCallback(async () => {
     try {
-      const res  = await fetch("http://localhost:8000/api/market/indices");
+      const res  = await fetch(`${API_BASE}/api/market/indices`);
       if (!res.ok) return;
       const data: IndexItem[] = await res.json();
       if (Array.isArray(data) && data.length > 0) {

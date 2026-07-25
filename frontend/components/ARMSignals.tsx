@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { RefreshCw, TrendingUp, Zap, AlertCircle } from "lucide-react";
+import { API_BASE } from "@/lib/api";
 
 interface ArmStock {
   ticker:       string;
@@ -131,7 +132,7 @@ export default function ARMSignals({ onSelectTicker }: { onSelectTicker: (t: str
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`http://localhost:8000/api/arm/signals${refresh ? "?refresh=true" : ""}`);
+      const res = await fetch(`${API_BASE}/api/arm/signals${refresh ? "?refresh=true" : ""}`);
       if (!res.ok) { const j = await res.json(); throw new Error(j.detail || "Failed"); }
       setData(await res.json());
     } catch (e: unknown) {
@@ -249,8 +250,65 @@ export default function ARMSignals({ onSelectTicker }: { onSelectTicker: (t: str
         </div>
       )}
 
-      {data && (
-        <>
+      {data && (() => {
+        const all = data.all_stocks;
+        const trending = all.filter(s => s.regime === "TRENDING").length;
+        const ranging  = all.filter(s => s.regime === "RANGING").length;
+        const neutral  = all.filter(s => s.regime === "NEUTRAL").length;
+        const momBuy   = all.filter(s => s.signal === "MOM_BUY").length;
+        const mrBuy    = all.filter(s => s.signal === "MR_BUY").length;
+        const watch    = all.filter(s => s.signal === "WATCH").length;
+        return (
+          <>
+          {/* Universe distribution */}
+          <div className="rounded-xl px-5 py-4 flex flex-wrap items-center gap-6"
+            style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
+            <div className="flex flex-col gap-1 min-w-0">
+              <div className="text-xs font-bold uppercase tracking-widest" style={{ color: "var(--muted)" }}>Regime Mix</div>
+              <div className="flex items-center gap-3">
+                {[
+                  { label: "Trending", count: trending, color: "#22c55e" },
+                  { label: "Ranging",  count: ranging,  color: "#f59e0b" },
+                  { label: "Neutral",  count: neutral,  color: "#6b7280" },
+                ].map(({ label, count, color }) => (
+                  <div key={label} className="flex items-center gap-1.5">
+                    <span className="text-base font-extrabold tabular-nums" style={{ color }}>{count}</span>
+                    <span className="text-xs" style={{ color: "var(--muted)" }}>{label}</span>
+                  </div>
+                ))}
+              </div>
+              {/* Bar */}
+              <div className="flex rounded-full overflow-hidden h-1.5 mt-1 gap-px" style={{ width: 180 }}>
+                {trending > 0 && <div style={{ flex: trending, background: "#22c55e" }} />}
+                {ranging  > 0 && <div style={{ flex: ranging,  background: "#f59e0b" }} />}
+                {neutral  > 0 && <div style={{ flex: neutral,  background: "#6b7280" }} />}
+              </div>
+            </div>
+            <div className="w-px h-10 flex-shrink-0" style={{ background: "var(--border)" }} />
+            <div className="flex flex-col gap-1 min-w-0">
+              <div className="text-xs font-bold uppercase tracking-widest" style={{ color: "var(--muted)" }}>Signal Mix</div>
+              <div className="flex items-center gap-3">
+                {[
+                  { label: "MOM BUY", count: momBuy, color: "#22c55e" },
+                  { label: "MR BUY",  count: mrBuy,  color: "#06b6d4" },
+                  { label: "Watch",   count: watch,   color: "#f59e0b" },
+                ].map(({ label, count, color }) => (
+                  <div key={label} className="flex items-center gap-1.5">
+                    <span className="text-base font-extrabold tabular-nums" style={{ color }}>{count}</span>
+                    <span className="text-xs" style={{ color: "var(--muted)" }}>{label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="w-px h-10 flex-shrink-0" style={{ background: "var(--border)" }} />
+            <div className="flex flex-col gap-1">
+              <div className="text-xs font-bold uppercase tracking-widest" style={{ color: "var(--muted)" }}>Coverage</div>
+              <div className="text-base font-extrabold tabular-nums" style={{ color: "var(--text)" }}>
+                {all.length} <span className="text-xs font-normal" style={{ color: "var(--muted)" }}>stocks</span>
+              </div>
+            </div>
+          </div>
+
           {/* Current picks */}
           <div className="flex flex-col gap-3">
             <div className="flex items-center gap-2">
@@ -338,8 +396,9 @@ export default function ARMSignals({ onSelectTicker }: { onSelectTicker: (t: str
               </div>
             </div>
           </div>
-        </>
-      )}
+          </>
+          );
+        })()}
     </div>
   );
 }

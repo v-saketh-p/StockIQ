@@ -47,6 +47,27 @@ export default function Home() {
   const activeListExists = watchlists.some(w => w.id === activeListId);
   const resolvedId = activeListExists ? activeListId : (watchlists[0]?.id ?? "");
 
+  // Watchlist keyboard navigation (↑/↓ arrows when not in an input)
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (view !== "research") return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      e.preventDefault();
+      const list = watchlists.find(w => w.id === resolvedId);
+      if (!list || list.tickers.length === 0) return;
+      const idx = ticker ? list.tickers.indexOf(ticker) : -1;
+      if (e.key === "ArrowDown") {
+        setTicker(list.tickers[(idx + 1) % list.tickers.length]);
+      } else {
+        setTicker(list.tickers[(idx - 1 + list.tickers.length) % list.tickers.length]);
+      }
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [view, ticker, watchlists, resolvedId]);
+
   function addToWatchlist(t: string) {
     setWatchlists(prev => prev.map(list =>
       list.id === resolvedId && !list.tickers.includes(t)
@@ -164,7 +185,11 @@ export default function Home() {
           ) : view === "portfolio" ? (
             <PortfolioTracker onSelectTicker={t => { setTicker(t); setView("research"); }} />
           ) : ticker ? (
-            <StockDashboard ticker={ticker} onAddToWatchlist={addToWatchlist} />
+            <StockDashboard
+              ticker={ticker}
+              onAddToWatchlist={addToWatchlist}
+              isInWatchlist={watchlists.find(w => w.id === resolvedId)?.tickers.includes(ticker) ?? false}
+            />
           ) : (
             <div className="flex flex-col items-center justify-center h-full gap-6">
               {/* Icon */}

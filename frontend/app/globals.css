@@ -60,6 +60,11 @@ body {
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
+/* ── Date inputs — match OS color scheme to app theme ── */
+:root input[type="date"],
+[data-theme="dark"] input[type="date"]  { color-scheme: dark; }
+[data-theme="light"] input[type="date"] { color-scheme: light; }
+
 /* ── Market ticker ── */
 .ticker-viewport          { cursor: grab; }
 .ticker-viewport:active   { cursor: grabbing; }

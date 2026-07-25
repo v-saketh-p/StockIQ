@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Sparkles, RefreshCw, TrendingUp, TrendingDown, Minus, RotateCcw } from "lucide-react";
+import { API_BASE } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -90,7 +91,7 @@ export default function AIReport({ ticker, autoTrigger }: Props) {
     abortRef.current = ctrl;
     setLoading(true); setError(null); setReport(""); setGenerated(false);
     try {
-      const res = await fetch(`http://localhost:8000/api/stock/${ticker}/plugin-report`, { signal: ctrl.signal });
+      const res = await fetch(`${API_BASE}/api/stock/${ticker}/plugin-report`, { signal: ctrl.signal });
       if (!res.ok) { const j = await res.json(); throw new Error(j.detail || "Failed"); }
       const reader  = res.body!.getReader();
       const decoder = new TextDecoder();

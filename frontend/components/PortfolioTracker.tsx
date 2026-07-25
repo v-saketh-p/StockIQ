@@ -4,6 +4,7 @@ import { useEffect, useState, useRef, useMemo } from "react";
 import {
   TrendingUp, TrendingDown, Plus, Trash2, RefreshCw, X, Check, Upload,
 } from "lucide-react";
+import { API_BASE } from "@/lib/api";
 import PortfolioPerformance from "./PortfolioPerformance";
 
 export interface Position {
@@ -93,11 +94,12 @@ function AddForm({ onAdd, onCancel }: {
     if (!date)                 return setErr("Select a purchase date");
     setLoading(true);
     try {
-      const res = await fetch(`http://localhost:8000/api/portfolio/prices?tickers=${t}`);
+      const res = await fetch(`${API_BASE}/api/portfolio/prices?tickers=${t}`);
       const json = await res.json();
       if (!json.prices[t]) return setErr(`Ticker "${t}" not found`);
       onAdd(t, sh, ac, date);
-    } catch {
+    } catch (e) {
+      console.error("Ticker verification failed:", e);
       setErr("Could not verify ticker — check your connection");
     } finally { setLoading(false); }
   }
@@ -299,10 +301,10 @@ export default function PortfolioTracker({ onSelectTicker }: Props) {
   useEffect(() => {
     async function fetchFx() {
       try {
-        const res  = await fetch("http://localhost:8000/api/fx/usdgbp");
+        const res  = await fetch(`${API_BASE}/api/fx/usdgbp`);
         const json = await res.json();
         if (json.usdToGbp) setUsdToGbp(json.usdToGbp);
-      } catch {}
+      } catch (e) { console.error("FX rate fetch failed:", e); }
     }
     fetchFx();
     const id = setInterval(fetchFx, 60_000);
@@ -314,11 +316,12 @@ export default function PortfolioTracker({ onSelectTicker }: Props) {
     setLoading(true);
     try {
       const tickers = [...new Set(pos.map(p => p.ticker))].join(",");
-      const res  = await fetch(`http://localhost:8000/api/portfolio/prices?tickers=${tickers}`);
+      const res  = await fetch(`${API_BASE}/api/portfolio/prices?tickers=${tickers}`);
       const json = await res.json();
       setPrices(json.prices ?? {});
-    } catch {}
-    finally { setLoading(false); }
+    } catch (e) {
+      console.error("Price fetch failed:", e);
+    } finally { setLoading(false); }
   }
 
   useEffect(() => { fetchPrices(positions); }, [positions]);
@@ -340,7 +343,8 @@ export default function PortfolioTracker({ onSelectTicker }: Props) {
     e.target.value = "";
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const text = ev.target?.result as string;
+      const text = ev.target?.result;
+      if (typeof text !== "string") return;
       const imported = parseT212CSV(text);
       if (!imported.length) { setImportMsg("No transactions found in CSV."); return; }
       setTransactions(prev => {
