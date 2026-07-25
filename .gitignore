@@ -1,3 +1,6 @@
+# Runtime data
+backend/arm_snapshot.json
+
 # Python
 __pycache__/
 *.pyc

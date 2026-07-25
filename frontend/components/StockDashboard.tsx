@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { TrendingUp, TrendingDown, Plus, RefreshCw, MessageSquare, X,
+import { TrendingUp, TrendingDown, Plus, Check, RefreshCw, MessageSquare, X,
          DollarSign, BarChart2, Activity, Layers, Sparkles, Zap } from "lucide-react";
+import { API_BASE } from "@/lib/api";
 import PriceChart from "./PriceChart";
 import MetricCard from "./MetricCard";
 import TechnicalGauge from "./TechnicalGauge";
@@ -99,9 +100,11 @@ function MetricPanel({
 export default function StockDashboard({
   ticker,
   onAddToWatchlist,
+  isInWatchlist = false,
 }: {
   ticker: string;
   onAddToWatchlist: (t: string) => void;
+  isInWatchlist?: boolean;
 }) {
   const [data,      setData]      = useState<StockData | null>(null);
   const [loading,   setLoading]   = useState(false);
@@ -117,7 +120,7 @@ export default function StockDashboard({
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`http://localhost:8000/api/stock/${ticker}`);
+      const res = await fetch(`${API_BASE}/api/stock/${ticker}`);
       if (!res.ok) { const j = await res.json(); throw new Error(j.detail || "Failed to fetch"); }
       setData(await res.json());
     } catch (e: unknown) {
@@ -129,9 +132,9 @@ export default function StockDashboard({
 
   async function fetchArmStock() {
     try {
-      const res = await fetch(`http://localhost:8000/api/arm/stock/${ticker}`);
+      const res = await fetch(`${API_BASE}/api/arm/stock/${ticker}`);
       if (res.ok) setArmStock(await res.json());
-    } catch {}
+    } catch (e) { console.error("ARM stock fetch failed:", e); }
   }
 
   useEffect(() => { fetchData(); fetchArmStock(); }, [ticker]);
@@ -270,10 +273,14 @@ export default function StockDashboard({
               )}
             </div>
             <div className="flex gap-2">
-              <button onClick={() => onAddToWatchlist(data.ticker)}
+              <button
+                onClick={() => { if (!isInWatchlist) onAddToWatchlist(data.ticker); }}
                 className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg font-semibold transition-all hover:opacity-80"
-                style={{ background: "var(--surface2)", border: "1px solid var(--border2)", color: "var(--muted2)" }}>
-                <Plus size={12} /> Watchlist
+                style={isInWatchlist
+                  ? { background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.2)", color: "var(--green)" }
+                  : { background: "var(--surface2)", border: "1px solid var(--border2)", color: "var(--muted2)" }}>
+                {isInWatchlist ? <Check size={12} /> : <Plus size={12} />}
+                {isInWatchlist ? "In Watchlist" : "Watchlist"}
               </button>
               <button onClick={fetchData} title="Refresh"
                 className="w-8 h-8 flex items-center justify-center rounded-lg transition-all hover:opacity-80"

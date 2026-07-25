@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useTheme } from "./ThemeProvider";
 
 declare global {
   interface Window {
@@ -23,6 +24,7 @@ export default function PriceChart({ ticker }: Props) {
   const overlayRef = useRef<HTMLDivElement>(null);
   const [active,  setActive]  = useState(false);
   const [hovered, setHovered] = useState(false);
+  const { theme } = useTheme();
 
   function handleWheel(e: React.WheelEvent) {
     let el = overlayRef.current?.parentElement;
@@ -54,10 +56,10 @@ export default function PriceChart({ ticker }: Props) {
         symbol:              ticker.toUpperCase(),
         interval:            "D",
         timezone:            "America/New_York",
-        theme:               "dark",
+        theme:               theme === "light" ? "light" : "dark",
         style:               "1",
         locale:              "en",
-        toolbar_bg:          "#0d0d14",
+        toolbar_bg:          theme === "light" ? "#ffffff" : "#0d0d14",
         enable_publishing:   false,
         allow_symbol_change: false,
         withdateranges:      true,
@@ -81,7 +83,7 @@ export default function PriceChart({ ticker }: Props) {
       const el = document.getElementById(id);
       if (el) el.innerHTML = "";
     };
-  }, [ticker]);
+  }, [ticker, theme]);
 
   return (
     <div

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { RefreshCw, TrendingUp, TrendingDown } from "lucide-react";
+import { API_BASE } from "@/lib/api";
 
 interface CompsRow {
   ticker: string; name: string; marketCapB: number | null; price: number;
@@ -69,7 +70,7 @@ export default function CompsTable({ ticker }: { ticker: string }) {
   async function load() {
     setLoading(true); setError(null);
     try {
-      const res = await fetch(`http://localhost:8000/api/stock/${ticker}/comps-data`);
+      const res = await fetch(`${API_BASE}/api/stock/${ticker}/comps-data`);
       if (!res.ok) { const j = await res.json(); throw new Error(j.detail || "Failed"); }
       setData(await res.json());
     } catch (e: unknown) {

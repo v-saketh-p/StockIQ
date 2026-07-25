@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { RefreshCw, TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { API_BASE } from "@/lib/api";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, ReferenceLine,
 } from "recharts";
@@ -127,7 +128,7 @@ export default function DCFModel({ ticker }: { ticker: string }) {
   async function load() {
     setLoading(true); setError(null);
     try {
-      const res = await fetch(`http://localhost:8000/api/stock/${ticker}/dcf-data`);
+      const res = await fetch(`${API_BASE}/api/stock/${ticker}/dcf-data`);
       if (!res.ok) {
         const j = await res.json();
         throw new Error(j.detail || "Failed");

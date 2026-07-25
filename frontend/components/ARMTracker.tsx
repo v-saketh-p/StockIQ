@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { RefreshCw, TrendingUp, Target } from "lucide-react";
+import { API_BASE } from "@/lib/api";
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, ReferenceLine,
@@ -71,7 +72,7 @@ export default function ARMTracker({ onSelectTicker }: { onSelectTicker: (t: str
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("http://localhost:8000/api/arm/performance");
+      const res = await fetch(`${API_BASE}/api/arm/performance`);
       if (!res.ok) { const j = await res.json(); throw new Error(j.detail || "Failed"); }
       setData(await res.json());
     } catch (e: unknown) {

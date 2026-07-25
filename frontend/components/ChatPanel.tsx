@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { X, Send, Sparkles, RefreshCw, ChevronRight } from "lucide-react";
+import { API_BASE } from "@/lib/api";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -146,7 +147,7 @@ export default function ChatPanel({ ticker, companyName, onClose }: Props) {
     let raw = "";
 
     try {
-      const res = await fetch(`http://localhost:8000/api/stock/${ticker}/chat`, {
+      const res = await fetch(`${API_BASE}/api/stock/${ticker}/chat`, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({ messages: history.map(m => ({ role: m.role, content: m.content })) }),

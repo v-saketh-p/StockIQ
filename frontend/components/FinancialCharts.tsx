@@ -5,6 +5,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   Cell, ReferenceLine,
 } from "recharts";
+import { API_BASE } from "@/lib/api";
 
 interface Financials {
   ticker: string;
@@ -77,7 +78,7 @@ export default function FinancialCharts({ ticker }: { ticker: string }) {
   useEffect(() => {
     setLoading(true);
     setData(null);
-    fetch(`http://localhost:8000/api/stock/${ticker}/financials`)
+    fetch(`${API_BASE}/api/stock/${ticker}/financials`)
       .then(r => r.ok ? r.json() : null)
       .then(d => { setData(d); setLoading(false); })
       .catch(() => setLoading(false));

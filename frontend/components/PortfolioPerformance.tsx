@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo } from "react";
 import { RefreshCw } from "lucide-react";
+import { API_BASE } from "@/lib/api";
 import {
   ComposedChart, Area, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid,
@@ -116,7 +117,7 @@ export default function PortfolioPerformance({ positions, transactions, netDepos
     if (!transactions.length) return;
     setLoading(true); setError(null);
     try {
-      const res = await fetch("http://localhost:8000/api/portfolio/performance", {
+      const res = await fetch(`${API_BASE}/api/portfolio/performance`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -210,7 +211,7 @@ export default function PortfolioPerformance({ positions, transactions, netDepos
     for (let i = 0; i < boundaries.length; i++) {
       const s = navOnOrAfter(boundaries[i]);
       const e = boundaries[i + 1] ? navBefore(boundaries[i + 1]) : navMap[sortedDates[sortedDates.length - 1]];
-      if (s && e && s > 0) twrr *= e / s;
+      if (s != null && e != null && s > 0) twrr *= e / s;
     }
     const ret = (twrr - 1) * 100;
 
