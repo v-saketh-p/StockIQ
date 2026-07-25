@@ -92,7 +92,8 @@ export default function AIReport({ ticker, autoTrigger }: Props) {
     try {
       const res = await fetch(`http://localhost:8000/api/stock/${ticker}/plugin-report`, { signal: ctrl.signal });
       if (!res.ok) { const j = await res.json(); throw new Error(j.detail || "Failed"); }
-      const reader  = res.body!.getReader();
+      if (!res.body) throw new Error("No response body from server");
+      const reader  = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = "";
       while (true) {

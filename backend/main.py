@@ -785,7 +785,7 @@ def get_earnings_meta(ticker: str):
         "analystRecs":    analyst_recs,
         "sector":         info.get("sector", ""),
         "industry":       info.get("industry", ""),
-        "price":          round(float(float(info.get("currentPrice") or info.get("regularMarketPrice") or t.history(period="1d")["Close"].dropna().iloc[-1])), 2),
+        "price":          round(float(info.get("currentPrice") or info.get("regularMarketPrice") or t.history(period="1d")["Close"].dropna().iloc[-1]), 2),
     }
 
 
@@ -883,9 +883,9 @@ async def get_dcf(ticker: str):
         t = yf.Ticker(t_upper)
         info = t.info
         if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
-            raise HTTPException(status_code=404, detail=f"Ticker '{t_upper}' not found")
+            raise ValueError(f"Ticker '{t_upper}' not found")
 
-        price      = round(float(float(info.get("currentPrice") or info.get("regularMarketPrice") or t.history(period="1d")["Close"].dropna().iloc[-1])), 2)
+        price      = round(float(info.get("currentPrice") or info.get("regularMarketPrice") or t.history(period="1d")["Close"].dropna().iloc[-1]), 2)
         shares_out = safe(info.get("sharesOutstanding"))
 
         def num(v, d=2): return f"{round(v, d)}" if v is not None else "N/A"
@@ -932,7 +932,10 @@ Show a 3×3 table of fair value across WACC (rows) vs terminal growth (columns).
 
 Show all calculations clearly. Use markdown tables. ~500 words."""
 
-    prompt = await asyncio.to_thread(_build)
+    try:
+        prompt = await asyncio.to_thread(_build)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     return StreamingResponse(ollama_stream_async(prompt), media_type="text/event-stream")
 
 
@@ -944,9 +947,9 @@ async def get_comps(ticker: str):
         t = yf.Ticker(t_upper)
         info = t.info
         if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
-            raise HTTPException(status_code=404, detail=f"Ticker '{t_upper}' not found")
+            raise ValueError(f"Ticker '{t_upper}' not found")
 
-        price = round(float(float(info.get("currentPrice") or info.get("regularMarketPrice") or t.history(period="1d")["Close"].dropna().iloc[-1])), 2)
+        price = round(float(info.get("currentPrice") or info.get("regularMarketPrice") or t.history(period="1d")["Close"].dropna().iloc[-1]), 2)
 
         def num(v, d=2): return f"{round(v, d)}" if v is not None else "N/A"
         def pct(v): return f"{round(v * 100, 2)}%" if v is not None else "N/A"
@@ -1002,7 +1005,10 @@ Include {t_upper} as the first row, clearly labelled. Grade each A/B/C on value 
 
 Use markdown tables throughout. Be precise. ~450 words."""
 
-    prompt = await asyncio.to_thread(_build)
+    try:
+        prompt = await asyncio.to_thread(_build)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     return StreamingResponse(ollama_stream_async(prompt), media_type="text/event-stream")
 
 
@@ -1053,7 +1059,7 @@ async def get_plugin_report(ticker: str):
         t = yf.Ticker(t_upper)
         info = t.info
         if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
-            raise HTTPException(status_code=404, detail=f"Ticker '{t_upper}' not found")
+            raise ValueError(f"Ticker '{t_upper}' not found")
 
         hist      = t.history(period="1y")
         hist      = hist[hist["Close"].notna()]
@@ -1157,7 +1163,10 @@ Write a full investment research initiation report with these exact sections:
 
 Be direct, opinionated, and specific with numbers throughout. Use markdown formatting. ~700 words."""
 
-    prompt = await asyncio.to_thread(_build)
+    try:
+        prompt = await asyncio.to_thread(_build)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     return StreamingResponse(ollama_stream_async(prompt), media_type="text/event-stream")
 
 

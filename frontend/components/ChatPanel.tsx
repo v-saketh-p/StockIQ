@@ -153,8 +153,8 @@ export default function ChatPanel({ ticker, companyName, onClose }: Props) {
         signal:  ctrl.signal,
       });
       if (!res.ok) throw new Error("Failed");
-
-      const reader  = res.body!.getReader();
+      if (!res.body) throw new Error("No response body from server");
+      const reader  = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = "";
 
