@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+/* ── Shared design tokens ── */
+:root {
+  --font-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
 /* ── Dark theme (default) ── */
 :root, [data-theme="dark"] {
   --background: #000000;
@@ -20,37 +26,108 @@
   --shadow:     rgba(0,0,0,0.5);
 }
 
+/* ── Vintage Paper theme ── */
+[data-theme="vintage"] {
+  --background: #f5f0e8;
+  --surface:    #faf7f0;
+  --surface2:   #ede8da;
+  --surface3:   #e0d9c8;
+  --border:     #d4c9b0;
+  --border2:    #c4b89a;
+  --text:       #2c2416;
+  --muted:      #8c7a5e;
+  --muted2:     #6b5a42;
+  --green:      #4a7c59;
+  --red:        #8b3a2a;
+  --blue:       #3a5f7a;
+  --purple:     #6b4f7a;
+  --yellow:     #a67c2a;
+  --cyan:       #3a7070;
+  --shadow:     rgba(60,40,10,0.12);
+}
+
+/* ── Finance Pro theme ── */
+[data-theme="finance"] {
+  --background: #0a0f1e;
+  --surface:    #111827;
+  --surface2:   #1a2235;
+  --surface3:   #243050;
+  --border:     #1e2d4a;
+  --border2:    #2a3f65;
+  --text:       #f1f5f9;
+  --muted:      #64748b;
+  --muted2:     #94a3b8;
+  --green:      #22c55e;
+  --red:        #ef4444;
+  --blue:       #3b82f6;
+  --purple:     #8b5cf6;
+  --yellow:     #f59e0b;
+  --cyan:       #06b6d4;
+  --shadow:     rgba(0,0,0,0.5);
+}
+
 /* ── Light theme ── */
 [data-theme="light"] {
-  --background: #f2f2f8;
+  --background: #fafafa;
   --surface:    #ffffff;
-  --surface2:   #eeeef6;
-  --surface3:   #e4e4f0;
-  --border:     #d8d8e8;
-  --border2:    #c8c8dc;
-  --text:       #111128;
-  --muted:      #8888a4;
-  --muted2:     #5555aa;
+  --surface2:   #f4f4f5;
+  --surface3:   #e4e4e7;
+  --border:     #e4e4e7;
+  --border2:    #d4d4d8;
+  --text:       #09090b;
+  --muted:      #71717a;
+  --muted2:     #52525b;
   --green:      #16a34a;
   --red:        #dc2626;
   --blue:       #2563eb;
   --purple:     #7c3aed;
   --yellow:     #d97706;
   --cyan:       #0891b2;
-  --shadow:     rgba(0,0,0,0.12);
+  --shadow:     rgba(0,0,0,0.06);
 }
 
 * { box-sizing: border-box; }
 
 body {
-  overflow-x: hidden; /* prevent ticker's wide content from expanding the page */
+  overflow-x: hidden;
   background: var(--background);
   color: var(--text);
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: var(--font-sans);
   margin: 0;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  transition: background 0.2s ease, color 0.2s ease;
+  transition: background 0.25s ease, color 0.25s ease;
+}
+
+/* ── Monospace for all financial numbers ── */
+.tabular-nums {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* ── Micro-interactions ── */
+button {
+  transition: transform 0.12s ease, box-shadow 0.12s ease,
+              opacity 0.15s ease, background-color 0.18s ease,
+              border-color 0.18s ease, color 0.18s ease;
+}
+button:not(:disabled):hover  { transform: translateY(-1px); }
+button:not(:disabled):active { transform: scale(0.96); opacity: 0.85; }
+
+/* Card hover glow */
+.card-hover {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  cursor: default;
+}
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 36px var(--shadow);
+}
+
+/* Smooth surface/border transitions when theme switches */
+div, span, nav, aside, header, main, section {
+  transition: background-color 0.25s ease, border-color 0.25s ease;
 }
 
 ::selection { background: rgba(59,130,246,0.25); }

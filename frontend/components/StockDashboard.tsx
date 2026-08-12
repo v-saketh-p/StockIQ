@@ -66,7 +66,7 @@ function fmtBig(v: number | null) {
 
 function QuickStat({ label, value, color }: { label: string; value: string; color: string }) {
   return (
-    <div className="rounded-xl px-4 py-3 flex flex-col gap-1"
+    <div className="card-hover rounded-xl px-4 py-3 flex flex-col gap-1"
       style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
       <div className="text-xs" style={{ color: "var(--muted)" }}>{label}</div>
       <div className="text-lg font-bold tabular-nums" style={{ color }}>{value}</div>
@@ -80,7 +80,7 @@ function MetricPanel({
   title: string; color: string; icon: React.ReactNode; children: React.ReactNode;
 }) {
   return (
-    <div className="rounded-xl p-4 flex flex-col gap-3"
+    <div className="card-hover rounded-xl p-4 flex flex-col gap-3"
       style={{ background: "var(--surface)", border: "1px solid var(--border)", borderTop: `2px solid ${color}` }}>
       <div className="flex items-center gap-2">
         <div className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0"
