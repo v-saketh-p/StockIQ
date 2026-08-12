@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { motion } from "framer-motion";
 import { TrendingUp, TrendingDown, Plus, RefreshCw, MessageSquare, X,
          DollarSign, BarChart2, Activity, Layers, Sparkles, Zap } from "lucide-react";
 import PriceChart from "./PriceChart";
@@ -11,6 +12,18 @@ import ChatPanel from "./ChatPanel";
 import FinancialCharts from "./FinancialCharts";
 import DCFModel from "./DCFModel";
 import CompsTable from "./CompsTable";
+import NumberTicker from "./NumberTicker";
+
+/* Animation variants — UI UX Pro Max "Modern Dark Cinema" stagger pattern */
+const containerVariants = {
+  hidden: {},
+  show: { transition: { staggerChildren: 0.07 } },
+};
+const cardVariants = {
+  hidden: { opacity: 0, y: 20, scale: 0.95 },
+  show:   { opacity: 1, y: 0,  scale: 1,
+    transition: { duration: 0.45, ease: [0.16, 1, 0.3, 1] as [number,number,number,number] } },
+};
 
 interface StockData {
   ticker: string;
@@ -66,11 +79,14 @@ function fmtBig(v: number | null) {
 
 function QuickStat({ label, value, color }: { label: string; value: string; color: string }) {
   return (
-    <div className="card-hover rounded-xl px-4 py-3 flex flex-col gap-1"
+    <motion.div variants={cardVariants}
+      whileHover={{ y: -3, boxShadow: `0 12px 32px rgba(0,0,0,0.35), 0 0 0 1px ${color}22` }}
+      transition={{ type: "spring", stiffness: 300, damping: 20 }}
+      className="rounded-xl px-4 py-3 flex flex-col gap-1"
       style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
       <div className="text-xs" style={{ color: "var(--muted)" }}>{label}</div>
       <div className="text-lg font-bold tabular-nums" style={{ color }}>{value}</div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -80,7 +96,10 @@ function MetricPanel({
   title: string; color: string; icon: React.ReactNode; children: React.ReactNode;
 }) {
   return (
-    <div className="card-hover rounded-xl p-4 flex flex-col gap-3"
+    <motion.div variants={cardVariants}
+      whileHover={{ y: -4, boxShadow: `0 16px 40px rgba(0,0,0,0.4), 0 0 0 1px ${color}33` }}
+      transition={{ type: "spring", stiffness: 260, damping: 22 }}
+      className="rounded-xl p-4 flex flex-col gap-3"
       style={{ background: "var(--surface)", border: "1px solid var(--border)", borderTop: `2px solid ${color}` }}>
       <div className="flex items-center gap-2">
         <div className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0"
@@ -92,7 +111,7 @@ function MetricPanel({
         </span>
       </div>
       <div className="flex flex-col gap-2.5">{children}</div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -170,10 +189,11 @@ export default function StockDashboard({
 
   return (
     <>
-    <div className="flex flex-col gap-5">
+    <motion.div className="flex flex-col gap-5"
+      variants={containerVariants} initial="hidden" animate="show">
 
       {/* ── Hero ── */}
-      <div className="rounded-2xl overflow-hidden"
+      <motion.div variants={cardVariants} className="rounded-2xl overflow-hidden"
         style={{ background: "var(--surface)", border: "1px solid var(--border2)", boxShadow: "0 1px 4px var(--shadow)" }}>
         <div className="h-0.5" style={{ background: "linear-gradient(90deg, #3b82f6 0%, #8b5cf6 50%, #ec4899 100%)" }} />
 
@@ -260,8 +280,8 @@ export default function StockDashboard({
           {/* Right: price + actions */}
           <div className="flex flex-col items-end gap-3 flex-shrink-0">
             <div>
-              <div className="text-4xl font-extrabold tabular-nums text-right" style={{ color: "var(--text)" }}>
-                ${fmt(data.price)}
+              <div className="text-4xl font-extrabold text-right" style={{ color: "var(--text)" }}>
+                $<NumberTicker value={data.price} decimals={2} duration={900} />
               </div>
               {data.preMarket?.price && (
                 <div className="text-xs text-right mt-0.5" style={{ color: "var(--muted)" }}>
@@ -283,15 +303,15 @@ export default function StockDashboard({
             </div>
           </div>
         </div>
-      </div>
+      </motion.div>
 
       {/* ── Quick stats strip ── */}
-      <div className="grid grid-cols-4 gap-3">
+      <motion.div variants={containerVariants} className="grid grid-cols-4 gap-3">
         <QuickStat label="P/E (Trailing)"  value={val.peTrailing !== null ? `${fmt(val.peTrailing, 1)}x` : "N/A"} color="#f59e0b" />
         <QuickStat label="Gross Margin"    value={prof.grossMargin !== null ? `${fmt(prof.grossMargin, 1)}%` : "N/A"} color="#22c55e" />
         <QuickStat label="RSI 14"          value={tech.rsi !== null ? fmt(tech.rsi, 1) : "N/A"} color="#06b6d4" />
         <QuickStat label="Vol / 20d Avg"   value={volRatio !== null ? `${volRatio.toFixed(2)}x` : "N/A"} color="#8b5cf6" />
-      </div>
+      </motion.div>
 
       {/* ── Chart ── */}
       <div className="rounded-xl overflow-hidden" style={{ border: "1px solid var(--border)" }}>
@@ -325,7 +345,7 @@ export default function StockDashboard({
         {/* ── Financial charts ── */}
         <FinancialCharts ticker={data.ticker} />
 
-        <div className="grid grid-cols-2 gap-4">
+        <motion.div variants={containerVariants} className="grid grid-cols-2 gap-4">
 
           {/* Valuation */}
           <MetricPanel title="Valuation" color="#f59e0b" icon={<DollarSign size={12} />}>
@@ -419,7 +439,7 @@ export default function StockDashboard({
             );
           })()}
 
-        </div>
+        </motion.div>
         </>
       )}
 
@@ -435,7 +455,7 @@ export default function StockDashboard({
         <AIReport ticker={data.ticker} autoTrigger={activeTab === "research"} />
       </div>
 
-    </div>
+    </motion.div>
 
     {chatOpen && (
       <ChatPanel ticker={data.ticker} companyName={data.name} onClose={() => setChatOpen(false)} />

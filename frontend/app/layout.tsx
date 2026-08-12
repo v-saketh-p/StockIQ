@@ -1,7 +1,5 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import NavBar from "@/components/NavBar";
-import MarketTicker from "@/components/MarketTicker";
 import { ThemeProvider } from "@/components/ThemeProvider";
 
 export const metadata: Metadata = {
@@ -12,7 +10,6 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="h-full" suppressHydrationWarning>
-      {/* Inline script runs before React hydration to prevent flash of wrong theme */}
       <head>
         <script dangerouslySetInnerHTML={{ __html: `
           try {
@@ -24,13 +21,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
       </head>
-      <body className="h-full flex flex-col" style={{ background: "var(--background)" }}>
+      <body className="h-full" style={{ background: "var(--background)" }}>
         <ThemeProvider>
-          <NavBar />
-          <MarketTicker />
-          <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
-            {children}
-          </div>
+          {children}
         </ThemeProvider>
       </body>
     </html>

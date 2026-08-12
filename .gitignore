@@ -21,3 +21,6 @@ node_modules/
 
 # Zip
 *.zip
+
+# MCP config (contains API keys)
+.mcp.json

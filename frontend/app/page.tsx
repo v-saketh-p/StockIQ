@@ -1,203 +1,205 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import SearchBar from "@/components/SearchBar";
-import StockDashboard from "@/components/StockDashboard";
-import Watchlist, { WatchlistGroup } from "@/components/Watchlist";
-import PortfolioTracker from "@/components/PortfolioTracker";
-import ARMSignals from "@/components/ARMSignals";
-import ARMTracker from "@/components/ARMTracker";
-import { BarChart2, Briefcase, Zap } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { motion } from "framer-motion";
+import { TrendingUp, Search, BarChart2, Briefcase, Zap, Sparkles,
+         ArrowRight, ChevronRight } from "lucide-react";
 
-function genId() {
-  return Math.random().toString(36).slice(2, 9);
-}
+const SUGGESTIONS = ["AAPL", "NVDA", "TSLA", "AMZN", "META", "GOOG", "MSFT", "AMD"];
 
-const DEFAULT_WATCHLISTS: WatchlistGroup[] = [
-  { id: "default", name: "My Watchlist", tickers: ["AAPL", "GOOG", "NVDA"] },
+const FEATURES = [
+  {
+    icon: BarChart2,
+    title: "Deep Stock Research",
+    desc: "Price, fundamentals, technicals, valuation, and comps — everything in one place. Powered by live market data.",
+    color: "#3b82f6",
+    href: "/research",
+  },
+  {
+    icon: Sparkles,
+    title: "AI-Powered Analysis",
+    desc: "Claude AI reads filings, news, and earnings to generate institutional-quality research reports in seconds.",
+    color: "#8b5cf6",
+    href: "/research",
+  },
+  {
+    icon: Zap,
+    title: "ARM Strategy",
+    desc: "Adaptive Regime Momentum — a quantitative signal scanner across 113 stocks with bi-weekly rebalancing.",
+    color: "#10b981",
+    href: "/arm",
+  },
+  {
+    icon: Briefcase,
+    title: "Portfolio Tracker",
+    desc: "Track your holdings, monitor live P&L, and analyse performance across currencies and sectors.",
+    color: "#f59e0b",
+    href: "/portfolio",
+  },
 ];
 
-export default function Home() {
-  const [ticker,       setTicker]       = useState<string | null>(null);
-  const [watchlists,   setWatchlists]   = useState<WatchlistGroup[]>(DEFAULT_WATCHLISTS);
-  const [activeListId, setActiveListId] = useState<string>("default");
-  const [view,         setView]         = useState<"research" | "portfolio" | "arm">("research");
-  const [armTab,       setArmTab]       = useState<"scanner" | "tracker">("scanner");
+const fade = { hidden: { opacity: 0, y: 24 }, show: { opacity: 1, y: 0, transition: { duration: 0.6, ease: [0.16,1,0.3,1] as [number,number,number,number] } } };
+const stagger = { hidden: {}, show: { transition: { staggerChildren: 0.1 } } };
 
-  // Load from localStorage after mount
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem("watchlists");
-      if (saved) setWatchlists(JSON.parse(saved));
-      const savedId = localStorage.getItem("activeListId");
-      if (savedId) setActiveListId(savedId);
-    } catch {}
-  }, []);
+export default function LandingPage() {
+  const router      = useRouter();
+  const [query, setQuery] = useState("");
+  const [focused, setFocused] = useState(false);
+  const inputRef    = useRef<HTMLInputElement>(null);
 
-  // Persist on change
-  useEffect(() => {
-    localStorage.setItem("watchlists", JSON.stringify(watchlists));
-  }, [watchlists]);
-
-  useEffect(() => {
-    localStorage.setItem("activeListId", activeListId);
-  }, [activeListId]);
-
-  // Resolve activeListId in case a list was deleted
-  const activeListExists = watchlists.some(w => w.id === activeListId);
-  const resolvedId = activeListExists ? activeListId : (watchlists[0]?.id ?? "");
-
-  function addToWatchlist(t: string) {
-    setWatchlists(prev => prev.map(list =>
-      list.id === resolvedId && !list.tickers.includes(t)
-        ? { ...list, tickers: [...list.tickers, t] }
-        : list
-    ));
+  function handleSearch(e: React.FormEvent) {
+    e.preventDefault();
+    const t = query.trim().toUpperCase();
+    if (t) router.push(`/research?ticker=${t}`);
   }
-
-  function removeFromWatchlist(t: string, listId: string) {
-    setWatchlists(prev => prev.map(list =>
-      list.id === listId
-        ? { ...list, tickers: list.tickers.filter(x => x !== t) }
-        : list
-    ));
-  }
-
-  function createWatchlist(name: string) {
-    const id = genId();
-    setWatchlists(prev => [...prev, { id, name, tickers: [] }]);
-    setActiveListId(id);
-  }
-
-  function renameWatchlist(id: string, name: string) {
-    setWatchlists(prev => prev.map(list =>
-      list.id === id ? { ...list, name } : list
-    ));
-  }
-
-  function deleteWatchlist(id: string) {
-    setWatchlists(prev => {
-      const next = prev.filter(list => list.id !== id);
-      if (activeListId === id) setActiveListId(next[0]?.id ?? "");
-      return next;
-    });
-  }
-
-  const QUICK_PICKS = ["AAPL", "NVDA", "TSLA", "AMZN", "META", "GOOG"];
 
   return (
-    <div className="flex overflow-hidden" style={{ height: "calc(100vh - 56px)", background: "var(--background)" }}>
-      {/* Sidebar */}
-      <aside
-        className="w-56 flex-shrink-0 flex flex-col border-r py-4 px-3 gap-3 overflow-hidden"
-        style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+    <div className="flex flex-col min-h-full" style={{ background: "var(--background)", position: "relative" }}>
+
+      {/* Full-page video background */}
+      <video
+        autoPlay
+        loop
+        muted
+        playsInline
+        style={{
+          position: "fixed",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          objectFit: "cover",
+          zIndex: 0,
+          pointerEvents: "none",
+          opacity: 0.45,
+        }}
       >
-        {/* View toggle */}
-        <div className="flex gap-1 p-1 rounded-xl flex-shrink-0"
-          style={{ background: "var(--surface2)", border: "1px solid var(--border)" }}>
-          {([
-            { id: "research",  label: "Research",  icon: <BarChart2 size={11} /> },
-            { id: "portfolio", label: "Portfolio", icon: <Briefcase size={11} /> },
-            { id: "arm",       label: "ARM",       icon: <Zap size={11} /> },
-          ] as const).map(v => (
-            <button key={v.id} onClick={() => setView(v.id)}
-              className="flex-1 flex items-center justify-center gap-1 text-[11px] font-semibold py-1.5 rounded-lg transition-all"
-              style={view === v.id
-                ? { background: "var(--surface)", color: "var(--text)", boxShadow: "0 1px 3px var(--shadow)" }
-                : { color: "var(--muted2)" }}>
-              {v.icon}{v.label}
+        <source src="/background.mp4" type="video/mp4" />
+      </video>
+
+      {/* ── Minimal landing navbar ── */}
+      <nav className="flex items-center justify-between px-8 flex-shrink-0"
+        style={{ height: 60, background: "transparent", position: "relative", zIndex: 1 }}>
+        <Link href="/" className="flex items-center gap-2.5" style={{ textDecoration: "none" }}>
+          <div className="w-7 h-7 rounded-lg flex items-center justify-center"
+            style={{ background: "linear-gradient(135deg,#3b82f6,#8b5cf6)" }}>
+            <TrendingUp size={14} color="#fff" strokeWidth={2.5} />
+          </div>
+          <span className="text-sm font-extrabold tracking-widest uppercase"
+            style={{ background: "linear-gradient(90deg,#3b82f6,#8b5cf6)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+            StockIQ
+          </span>
+        </Link>
+
+        <Link href="/research"
+          className="flex items-center gap-2 text-xs font-semibold px-4 py-2 rounded-lg transition-all hover:opacity-80"
+          style={{ background: "var(--surface2)", border: "1px solid var(--border)", color: "var(--text)", textDecoration: "none" }}>
+          Launch App <ArrowRight size={12} />
+        </Link>
+      </nav>
+
+      {/* ── Hero ── */}
+      <section className="flex flex-col items-center justify-center text-center px-6 py-24 gap-8 relative" style={{ zIndex: 1 }}>
+
+        <motion.div variants={stagger} initial="hidden" animate="show"
+          className="flex flex-col items-center gap-8 relative" style={{ zIndex: 1 }}>
+
+          {/* Headline */}
+          <motion.div variants={fade} className="flex flex-col gap-3">
+            <h1 className="font-extrabold leading-tight"
+              style={{ fontSize: "clamp(2.5rem, 6vw, 4.5rem)", color: "var(--text)", letterSpacing: "-0.03em" }}>
+              Research smarter.
+            </h1>
+            <h1 className="font-extrabold leading-tight"
+              style={{ fontSize: "clamp(2.5rem, 6vw, 4.5rem)", letterSpacing: "-0.03em",
+                background: "linear-gradient(90deg,#3b82f6 0%,#8b5cf6 50%,#06b6d4 100%)",
+                WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+              Invest better.
+            </h1>
+          </motion.div>
+
+          <motion.p variants={fade} className="text-base max-w-xl leading-relaxed"
+            style={{ color: "var(--muted2)" }}>
+            Institutional-grade stock research — fundamentals, technicals, AI reports, and quantitative signals — free, for everyone.
+          </motion.p>
+
+          {/* Search box */}
+          <motion.form variants={fade} onSubmit={handleSearch}
+            className="w-full max-w-md flex gap-2">
+            <div className="flex-1 flex items-center gap-2 rounded-xl px-4 py-3"
+              style={{
+                background: "var(--surface)",
+                border: `1px solid ${focused ? "var(--blue)" : "var(--border2)"}`,
+                boxShadow: focused ? "0 0 0 3px rgba(59,130,246,0.15)" : "none",
+                transition: "border-color 0.15s ease, box-shadow 0.15s ease",
+              }}>
+              <Search size={15} style={{ color: "var(--muted)", flexShrink: 0 }} />
+              <input
+                ref={inputRef}
+                value={query}
+                onChange={e => setQuery(e.target.value.toUpperCase())}
+                onFocus={() => setFocused(true)}
+                onBlur={() => setFocused(false)}
+                placeholder="Enter a ticker — e.g. AAPL, TSLA"
+                className="flex-1 bg-transparent outline-none text-sm font-medium tabular-nums"
+                style={{ color: "var(--text)" }}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </div>
+            <button type="submit"
+              className="flex items-center gap-1.5 px-5 py-3 rounded-xl text-sm font-bold"
+              style={{ background: "linear-gradient(135deg,#3b82f6,#6366f1)", color: "#fff", flexShrink: 0 }}>
+              Search <ChevronRight size={14} />
             </button>
-          ))}
+          </motion.form>
+
+        </motion.div>
+      </section>
+
+      {/* ── Features ── */}
+      <section className="px-6 pb-24" style={{ position: "relative", zIndex: 1 }}>
+        <div className="max-w-5xl mx-auto">
+          <motion.div variants={stagger} initial="hidden" whileInView="show" viewport={{ once: true, amount: 0.2 }}
+            className="grid grid-cols-2 gap-4" style={{ gridTemplateColumns: "repeat(2, 1fr)" }}>
+            {FEATURES.map(({ icon: Icon, title, desc, color, href }) => (
+              <motion.div key={title} variants={fade}>
+                <Link href={href} style={{ textDecoration: "none" }}>
+                  <motion.div
+                    whileHover={{ y: -4, boxShadow: `0 16px 40px rgba(0,0,0,0.3), 0 0 0 1px ${color}33` }}
+                    transition={{ type: "spring", stiffness: 260, damping: 22 }}
+                    className="rounded-2xl p-6 h-full flex flex-col gap-4"
+                    style={{ background: "var(--surface)", border: "1px solid var(--border)", borderTop: `2px solid ${color}`, cursor: "pointer" }}>
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center"
+                      style={{ background: `${color}18` }}>
+                      <Icon size={20} style={{ color }} />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <h3 className="text-base font-bold" style={{ color: "var(--text)" }}>{title}</h3>
+                      <p className="text-sm leading-relaxed" style={{ color: "var(--muted2)" }}>{desc}</p>
+                    </div>
+                    <div className="flex items-center gap-1 text-xs font-semibold mt-auto" style={{ color }}>
+                      Explore <ChevronRight size={12} />
+                    </div>
+                  </motion.div>
+                </Link>
+              </motion.div>
+            ))}
+          </motion.div>
         </div>
+      </section>
 
-        {view === "research" && (
-          <Watchlist
-            watchlists={watchlists}
-            activeListId={resolvedId}
-            activeTicker={ticker}
-            onSelectTicker={setTicker}
-            onSelectList={setActiveListId}
-            onCreateList={createWatchlist}
-            onRenameList={renameWatchlist}
-            onDeleteList={deleteWatchlist}
-            onRemoveTicker={removeFromWatchlist}
-          />
-        )}
-      </aside>
-
-      {/* Main */}
-      <main className="flex-1 flex flex-col overflow-hidden">
-        {/* Search header */}
-        <header
-          className="flex items-center gap-4 px-6 py-3.5 border-b flex-shrink-0"
-          style={{ background: "var(--surface)", borderColor: "var(--border)" }}
-        >
-          <SearchBar
-            onSearch={t => {
-              setTicker(t);
-              addToWatchlist(t);
-            }}
-          />
-        </header>
-
-        <div className="flex-1 overflow-y-auto p-6" data-scroll>
-          {view === "arm" ? (
-            <div className="flex flex-col gap-5">
-              {/* ARM sub-tabs */}
-              <div className="flex gap-1 p-1 rounded-xl self-start"
-                style={{ background: "var(--surface2)", border: "1px solid var(--border)" }}>
-                {(["scanner", "tracker"] as const).map(tab => (
-                  <button key={tab} onClick={() => setArmTab(tab)}
-                    className="px-4 py-1.5 rounded-lg text-xs font-semibold transition-all"
-                    style={armTab === tab
-                      ? { background: "var(--surface)", color: "var(--text)", boxShadow: "0 1px 3px var(--shadow)" }
-                      : { color: "var(--muted2)" }}>
-                    {tab === "scanner" ? "Scanner" : "Tracker"}
-                  </button>
-                ))}
-              </div>
-              {armTab === "scanner"
-                ? <ARMSignals onSelectTicker={t => { setTicker(t); setView("research"); }} />
-                : <ARMTracker onSelectTicker={t => { setTicker(t); setView("research"); }} />
-              }
-            </div>
-          ) : view === "portfolio" ? (
-            <PortfolioTracker onSelectTicker={t => { setTicker(t); setView("research"); }} />
-          ) : ticker ? (
-            <StockDashboard ticker={ticker} onAddToWatchlist={addToWatchlist} />
-          ) : (
-            <div className="flex flex-col items-center justify-center h-full gap-6">
-              {/* Icon */}
-              <div className="w-20 h-20 rounded-3xl flex items-center justify-center"
-                style={{ background: "linear-gradient(135deg,rgba(59,130,246,0.15),rgba(139,92,246,0.15))", border: "1px solid rgba(59,130,246,0.2)" }}>
-                <span className="text-4xl select-none">📈</span>
-              </div>
-              <div className="text-center flex flex-col gap-1.5">
-                <div className="text-xl font-bold" style={{ color: "var(--text)" }}>
-                  Research any stock
-                </div>
-                <div className="text-sm" style={{ color: "var(--muted2)" }}>
-                  Search a ticker above for price, fundamentals, technicals, and AI analysis
-                </div>
-              </div>
-              {/* Quick picks */}
-              <div className="flex flex-col items-center gap-2">
-                <div className="text-xs uppercase tracking-widest" style={{ color: "var(--muted)" }}>Quick picks</div>
-                <div className="flex gap-2 flex-wrap justify-center">
-                  {QUICK_PICKS.map(t => (
-                    <button key={t}
-                      onClick={() => { setTicker(t); addToWatchlist(t); }}
-                      className="px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all hover:opacity-80"
-                      style={{ background: "var(--surface2)", border: "1px solid var(--border2)", color: "var(--text)" }}>
-                      {t}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
+      {/* ── Footer ── */}
+      <footer className="mt-auto px-8 py-6 flex items-center justify-between border-t"
+        style={{ position: "relative", zIndex: 1, borderColor: "var(--border)", color: "var(--muted)" }}>
+        <span className="text-xs">© 2026 StockIQ</span>
+        <div className="flex items-center gap-4">
+          <Link href="/research" className="text-xs hover:opacity-80" style={{ color: "var(--muted)", textDecoration: "none" }}>Research</Link>
+          <Link href="/portfolio" className="text-xs hover:opacity-80" style={{ color: "var(--muted)", textDecoration: "none" }}>Portfolio</Link>
+          <Link href="/arm" className="text-xs hover:opacity-80" style={{ color: "var(--muted)", textDecoration: "none" }}>ARM</Link>
         </div>
-      </main>
+      </footer>
     </div>
   );
 }
