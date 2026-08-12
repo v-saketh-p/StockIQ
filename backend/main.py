@@ -14,17 +14,22 @@ from pathlib import Path
 import time as _time
 from typing import List
 import sys, os
+import anthropic
 sys.path.insert(0, os.path.dirname(__file__))
 from indicators import (
     compute_adx, compute_rsi, compute_bollinger_bands,
     compute_momentum_12_1, compute_volume_ratio,
 )
 
+_anthropic_client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+_anthropic_async_client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -450,31 +455,13 @@ Write a structured report with these sections:
 Be direct and opinionated. Use markdown formatting. Keep total length to ~500 words."""
 
     def stream_report():
-        with httpx.stream(
-            "POST",
-            "http://localhost:11434/api/chat",
-            json={
-                "model": "llama3.2",
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": True,
-            },
-            timeout=120,
-        ) as resp:
-            if resp.status_code != 200:
-                yield f"data: {json.dumps({'text': 'Ollama error: ' + str(resp.status_code)})}\n\n"
-                return
-            for line in resp.iter_lines():
-                if not line:
-                    continue
-                try:
-                    chunk = json.loads(line)
-                    text = chunk.get("message", {}).get("content", "")
-                    if text:
-                        yield f"data: {json.dumps({'text': text})}\n\n"
-                    if chunk.get("done"):
-                        break
-                except Exception:
-                    continue
+        with _anthropic_client.messages.stream(
+            model=CLAUDE_MODEL,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        ) as stream:
+            for text in stream.text_stream:
+                yield f"data: {json.dumps({'text': text})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(stream_report(), media_type="text/event-stream")
@@ -573,21 +560,13 @@ Format your response EXACTLY as shown — use these exact headers, no intro or o
 - [genuine risk 4 with specific numbers]"""
 
     def stream_bb():
-        with httpx.stream(
-            "POST", "http://localhost:11434/api/chat",
-            json={"model": "llama3.2", "messages": [{"role": "user", "content": prompt}], "stream": True},
-            timeout=120,
-        ) as resp:
-            if resp.status_code != 200:
-                yield f"data: {json.dumps({'text': 'Ollama error'})}\n\n"; return
-            for line in resp.iter_lines():
-                if not line: continue
-                try:
-                    chunk = json.loads(line)
-                    text = chunk.get("message", {}).get("content", "")
-                    if text: yield f"data: {json.dumps({'text': text})}\n\n"
-                    if chunk.get("done"): break
-                except Exception: continue
+        with _anthropic_client.messages.stream(
+            model=CLAUDE_MODEL,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        ) as stream:
+            for text in stream.text_stream:
+                yield f"data: {json.dumps({'text': text})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(stream_bb(), media_type="text/event-stream")
@@ -671,65 +650,36 @@ MANDATORY — you MUST end EVERY response with exactly this block (no exceptions
             "role": "user",
             "content": raw_msgs[-1]["content"] + "\n\n(End your reply with ===FOLLOWUPS=== and exactly 3 short follow-up questions.)",
         }
-    messages = [{"role": "system", "content": system_prompt}] + raw_msgs
 
     def stream_chat():
-        with httpx.stream(
-            "POST",
-            "http://localhost:11434/api/chat",
-            json={"model": "llama3.2", "messages": messages, "stream": True},
-            timeout=120,
-        ) as resp:
-            if resp.status_code != 200:
-                yield f"data: {json.dumps({'text': 'Ollama error'})}\n\n"
-                return
-            for line in resp.iter_lines():
-                if not line: continue
-                try:
-                    chunk = json.loads(line)
-                    text = chunk.get("message", {}).get("content", "")
-                    if text:
-                        yield f"data: {json.dumps({'text': text})}\n\n"
-                    if chunk.get("done"): break
-                except Exception:
-                    continue
+        with _anthropic_client.messages.stream(
+            model=CLAUDE_MODEL,
+            max_tokens=1024,
+            system=system_prompt,
+            messages=raw_msgs,
+        ) as stream:
+            for text in stream.text_stream:
+                yield f"data: {json.dumps({'text': text})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(stream_chat(), media_type="text/event-stream")
 
 
-# ── Shared Ollama streaming helper ────────────────────────────────────────────
-async def ollama_stream_async(prompt: str):
-    """Async SSE generator — Starlette cancels this coroutine on client disconnect,
-    which exits the async context manager and closes the Ollama connection immediately."""
+# ── Shared Claude streaming helper ────────────────────────────────────────────
+async def claude_stream_async(prompt: str):
+    """Async SSE generator using the Anthropic streaming API."""
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
-        ) as client:
-            async with client.stream(
-                "POST", "http://localhost:11434/api/chat",
-                json={"model": "llama3.2", "messages": [{"role": "user", "content": prompt}], "stream": True},
-            ) as resp:
-                if resp.status_code != 200:
-                    yield f"data: {json.dumps({'text': 'Ollama error'})}\n\n"
-                    return
-                async for line in resp.aiter_lines():
-                    if not line:
-                        continue
-                    try:
-                        chunk = json.loads(line)
-                        text = chunk.get("message", {}).get("content", "")
-                        if text:
-                            yield f"data: {json.dumps({'text': text})}\n\n"
-                        if chunk.get("done"):
-                            break
-                    except Exception:
-                        continue
+        async with _anthropic_async_client.messages.stream(
+            model=CLAUDE_MODEL,
+            max_tokens=1536,
+            messages=[{"role": "user", "content": prompt}],
+        ) as stream:
+            async for text in stream.text_stream:
+                yield f"data: {json.dumps({'text': text})}\n\n"
     except asyncio.CancelledError:
-        return  # browser disconnected — Ollama connection freed immediately
-    except (httpx.TimeoutException, httpx.RemoteProtocolError):
-        timeout_msg = json.dumps({"text": "\n\n[Generation timed out]"})
-        yield f"data: {timeout_msg}\n\n"
+        return
+    except anthropic.APIError as e:
+        yield f"data: {json.dumps({'text': f'[API error: {e}]'})}\n\n"
     yield "data: [DONE]\n\n"
 
 
@@ -872,7 +822,7 @@ Write a structured earnings preview report with these exact sections:
 Be direct and opinionated. Use markdown formatting. ~400 words."""
 
     prompt = await asyncio.to_thread(_build)
-    return StreamingResponse(ollama_stream_async(prompt), media_type="text/event-stream")
+    return StreamingResponse(claude_stream_async(prompt), media_type="text/event-stream")
 
 
 # ── financial-analysis: dcf-model skill ──────────────────────────────────────
@@ -933,7 +883,7 @@ Show a 3×3 table of fair value across WACC (rows) vs terminal growth (columns).
 Show all calculations clearly. Use markdown tables. ~500 words."""
 
     prompt = await asyncio.to_thread(_build)
-    return StreamingResponse(ollama_stream_async(prompt), media_type="text/event-stream")
+    return StreamingResponse(claude_stream_async(prompt), media_type="text/event-stream")
 
 
 # ── financial-analysis: comps-analysis skill ──────────────────────────────────
@@ -1003,7 +953,7 @@ Include {t_upper} as the first row, clearly labelled. Grade each A/B/C on value 
 Use markdown tables throughout. Be precise. ~450 words."""
 
     prompt = await asyncio.to_thread(_build)
-    return StreamingResponse(ollama_stream_async(prompt), media_type="text/event-stream")
+    return StreamingResponse(claude_stream_async(prompt), media_type="text/event-stream")
 
 
 # ── market-researcher: sector-overview + idea-generation skills ───────────────
@@ -1042,7 +992,7 @@ Bull / Base / Bear
 
 Be opinionated, specific, and timely. Use markdown throughout. ~600 words."""
 
-    return StreamingResponse(ollama_stream_async(prompt), media_type="text/event-stream")
+    return StreamingResponse(claude_stream_async(prompt), media_type="text/event-stream")
 
 
 # ── Plugin-enhanced dashboard report (all 4 plugins) ─────────────────────────
@@ -1158,7 +1108,7 @@ Write a full investment research initiation report with these exact sections:
 Be direct, opinionated, and specific with numbers throughout. Use markdown formatting. ~700 words."""
 
     prompt = await asyncio.to_thread(_build)
-    return StreamingResponse(ollama_stream_async(prompt), media_type="text/event-stream")
+    return StreamingResponse(claude_stream_async(prompt), media_type="text/event-stream")
 
 
 # ── Ticker-specific peer overrides (checked before industry lookup) ────────────
