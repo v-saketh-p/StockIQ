@@ -167,12 +167,19 @@ export default function LandingPage() {
               <motion.div key={title} variants={fade}>
                 <Link href={href} style={{ textDecoration: "none" }}>
                   <motion.div
-                    whileHover={{ y: -4, boxShadow: `0 16px 40px rgba(0,0,0,0.3), 0 0 0 1px ${color}33` }}
+                    whileHover={{ y: -4, boxShadow: `0 16px 40px rgba(0,0,0,0.4), 0 0 0 1px ${color}44` }}
                     transition={{ type: "spring", stiffness: 260, damping: 22 }}
                     className="rounded-2xl p-6 h-full flex flex-col gap-4"
-                    style={{ background: "var(--surface)", border: "1px solid var(--border)", borderTop: `2px solid ${color}`, cursor: "pointer" }}>
+                    style={{
+                      background: "rgba(255,255,255,0.04)",
+                      backdropFilter: "blur(20px)",
+                      WebkitBackdropFilter: "blur(20px)",
+                      border: "1px solid rgba(255,255,255,0.08)",
+                      borderTop: `2px solid ${color}`,
+                      cursor: "pointer",
+                    }}>
                     <div className="w-10 h-10 rounded-xl flex items-center justify-center"
-                      style={{ background: `${color}18` }}>
+                      style={{ background: `${color}20` }}>
                       <Icon size={20} style={{ color }} />
                     </div>
                     <div className="flex flex-col gap-1.5">
